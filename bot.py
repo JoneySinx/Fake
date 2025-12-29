@@ -12,11 +12,9 @@ import time
 import asyncio
 import uvloop
 from typing import Union, Optional, AsyncGenerator
-
 from aiohttp import web
 from hydrogram import Client, types
 from hydrogram.errors import FloodWait
-
 from web import web_app
 from info import (
     API_ID,
@@ -31,12 +29,12 @@ from info import (
     DATABASE_URL,
     DATABASE_NAME
 )
-
-from utils import temp, get_readable_time, check_premium
+from utils import temp, get_readable_time
 from database.users_chats_db import db
-
 from pymongo import MongoClient
 
+# -------------------- IMPORT PREMIUM MODULE --------------------
+from plugins.Premium import check_premium_expired
 
 # -------------------- EVENT LOOP (PY 3.11 SAFE) --------------------
 try:
@@ -46,7 +44,6 @@ except RuntimeError:
     asyncio.set_event_loop(loop)
 
 uvloop.install()
-
 
 # -------------------- BOT CLASS --------------------
 class Bot(Client):
@@ -62,12 +59,12 @@ class Bot(Client):
     async def start(self):
         await super().start()
         temp.START_TIME = time.time()
-
+        
         # Load banned users & chats
         b_users, b_chats = await db.get_banned()
         temp.BANNED_USERS = b_users
         temp.BANNED_CHATS = b_chats
-
+        
         # Restart message handling
         if os.path.exists("restart.txt"):
             with open("restart.txt") as f:
@@ -81,22 +78,22 @@ class Bot(Client):
             except Exception:
                 pass
             os.remove("restart.txt")
-
+        
         # Bot identity
         temp.BOT = self
         me = await self.get_me()
         temp.ME = me.id
         temp.U_NAME = me.username
         temp.B_NAME = me.first_name
-
+        
         # Web server (stream / health check)
         runner = web.AppRunner(web_app)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", PORT).start()
-
-        # Premium expiry checker
-        asyncio.create_task(check_premium(self))
-
+        
+        # ✅ Premium expiry checker (FROM PREMIUM.PY)
+        asyncio.create_task(check_premium_expired(self))
+        
         # Startup log
         try:
             await self.send_message(
@@ -106,7 +103,7 @@ class Bot(Client):
         except Exception:
             logger.error("Bot is not admin in LOG_CHANNEL")
             exit()
-
+        
         logger.info(f"@{me.username} started successfully")
 
     async def stop(self, *args):
@@ -120,7 +117,6 @@ class Bot(Client):
         limit: int,
         offset: int = 0
     ) -> Optional[AsyncGenerator["types.Message", None]]:
-
         current = offset
         while current < limit:
             diff = min(200, limit - current)
@@ -132,13 +128,11 @@ class Bot(Client):
                 yield message
                 current += 1
 
-
 # -------------------- SAFE START --------------------
 async def main():
     bot = Bot()
     await bot.start()
     await asyncio.Event().wait()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
