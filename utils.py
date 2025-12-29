@@ -1,5 +1,6 @@
 import asyncio
 import re
+import requests
 from datetime import datetime
 from hydrogram.errors import FloodWait
 from hydrogram import enums
@@ -48,16 +49,18 @@ async def is_check_admin(bot, chat_id, user_id):
 async def is_premium(user_id, bot):
     if not IS_PREMIUM:
         return True
+
     if user_id in ADMINS:
         return True
 
     mp = db.get_plan(user_id)
     if mp.get("premium"):
-        if mp.get("expire") and mp["expire"] < datetime.now():
+        expire = mp.get("expire")
+        if expire and expire < datetime.now():
             try:
                 await bot.send_message(
                     user_id,
-                    f"Your premium {mp.get('plan')} plan has expired."
+                    f"❌ Your premium {mp.get('plan')} plan has expired."
                 )
             except Exception:
                 pass
@@ -70,6 +73,7 @@ async def is_premium(user_id, bot):
             db.update_plan(user_id, mp)
             return False
         return True
+
     return False
 
 
@@ -77,11 +81,11 @@ async def check_premium(bot):
     while True:
         for p in db.get_premium_users():
             mp = p.get("status", {})
-            if mp.get("premium") and mp.get("expire") < datetime.now():
+            if mp.get("premium") and mp.get("expire") and mp["expire"] < datetime.now():
                 try:
                     await bot.send_message(
                         p["id"],
-                        f"Your premium {mp.get('plan')} plan has expired."
+                        f"❌ Your premium {mp.get('plan')} plan has expired."
                     )
                 except Exception:
                     pass
@@ -146,6 +150,27 @@ async def save_group_settings(group_id, key, value):
     current[key] = value
     temp.SETTINGS[group_id] = current
     await db.update_settings(group_id, current)
+
+
+# ─────────────────────────────────────────────
+# 🖼 IMAGE → LINK (USED BY /img_2_link)
+# ─────────────────────────────────────────────
+def upload_image(file_path: str):
+    """
+    Upload image to uguu.se and return direct URL
+    """
+    try:
+        with open(file_path, "rb") as f:
+            response = requests.post(
+                "https://uguu.se/upload",
+                files={"files[]": f},
+                timeout=30
+            )
+        if response.status_code == 200:
+            data = response.json()
+            return data["files"][0]["url"].replace("\\/", "/")
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────
