@@ -50,7 +50,10 @@ from utils import (
 # ─────────────────────────────────────
 async def del_stk(s):
     await asyncio.sleep(3)
-    await s.delete()
+    try:
+        await s.delete()
+    except:
+        pass
 
 
 # ─────────────────────────────────────
@@ -59,7 +62,7 @@ async def del_stk(s):
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client, message):
 
-    # GROUP START
+    # ───── GROUP START ─────
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         if not await db.get_chat(message.chat.id):
             total = await client.get_chat_members_count(message.chat.id)
@@ -81,15 +84,30 @@ async def start(client, message):
         )
         return
 
-    # PRIVATE START
+    # ───── PRIVATE START ─────
+
+    # ✅ REACTION SAFE
     try:
-        await message.react(emoji=random.choice(REACTIONS), big=True)
+        if REACTIONS:
+            await message.react(emoji=random.choice(REACTIONS), big=True)
+        else:
+            await message.react("⚡️", big=True)
     except:
-        await message.react("⚡️", big=True)
+        pass
 
-    stk = await client.send_sticker(message.chat.id, random.choice(STICKERS))
-    asyncio.create_task(del_stk(stk))
+    # ✅ STICKER SAFE (FIXED)
+    if STICKERS:
+        try:
+            stk = await client.send_sticker(
+                message.chat.id,
+                random.choice(STICKERS)
+            )
+            asyncio.create_task(del_stk(stk))
+        except:
+            pass
+    # if STICKERS empty → silently skip
 
+    # ───── USER DB ─────
     if not await db.is_user_exist(message.from_user.id):
         await db.add_user(message.from_user.id, message.from_user.first_name)
         await client.send_message(
@@ -100,7 +118,7 @@ async def start(client, message):
             )
         )
 
-    # PREMIUM CHECK
+    # ───── PREMIUM CHECK ─────
     if not await is_premium(message.from_user.id, client) and message.from_user.id not in ADMINS:
         return await message.reply_photo(
             random.choice(PICS),
@@ -113,13 +131,21 @@ async def start(client, message):
             ]])
         )
 
-    # NORMAL START UI
+    # ───── NORMAL START UI ─────
     if len(message.command) == 1:
         await message.reply_photo(
             random.choice(PICS),
-            caption=script.START_TXT.format(message.from_user.mention, get_wish()),
+            caption=script.START_TXT.format(
+                message.from_user.mention,
+                get_wish()
+            ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("+ ADD ME TO YOUR GROUP +", url=f"https://t.me/{temp.U_NAME}?startgroup=start")],
+                [
+                    InlineKeyboardButton(
+                        "+ ADD ME TO YOUR GROUP +",
+                        url=f"https://t.me/{temp.U_NAME}?startgroup=start"
+                    )
+                ],
                 [
                     InlineKeyboardButton("👨‍🚒 HELP", callback_data="help"),
                     InlineKeyboardButton("📚 ABOUT", callback_data="about")
@@ -157,12 +183,8 @@ async def stats(_, message):
 
 
 # ─────────────────────────────────────
-# DELETE FILES
-# ─
-from hydrogram.types import InlineKeyboardButton
-from utils import get_settings, get_readable_time
-from info import DELETE_TIME
-
+# GROUP SETTINGS UI
+# ─────────────────────────────────────
 async def get_grp_stg(group_id):
     """
     Return inline buttons for group settings panel
