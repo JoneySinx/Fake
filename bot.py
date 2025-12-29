@@ -34,7 +34,7 @@ from database.users_chats_db import db
 from pymongo import MongoClient
 
 # -------------------- IMPORT PREMIUM MODULE --------------------
-from plugins.Premium import check_premium_expired
+from plugins.premium import check_premium_expired
 
 # -------------------- EVENT LOOP (PY 3.11 SAFE) --------------------
 try:
