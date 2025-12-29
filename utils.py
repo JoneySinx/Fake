@@ -1,12 +1,12 @@
 import asyncio
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from hydrogram.errors import FloodWait
 from hydrogram import enums
 from hydrogram.types import InlineKeyboardButton
 
-from info import ADMINS, IS_PREMIUM, TIME_ZONE
+from info import ADMINS, IS_PREMIUM, TIME_ZONE, LOG_CHANNEL
 from database.users_chats_db import db
 
 
@@ -45,9 +45,10 @@ async def is_check_admin(bot, chat_id, user_id):
 
 
 # ─────────────────────────────────────────────
-# 💎 PREMIUM SYSTEM
+# 💎 PREMIUM SYSTEM (Synced with Premium.py)
 # ─────────────────────────────────────────────
 async def is_premium(user_id, bot):
+    """Check if user has active premium subscription"""
     if not IS_PREMIUM:
         return True
     if user_id in ADMINS:
@@ -59,7 +60,7 @@ async def is_premium(user_id, bot):
             try:
                 await bot.send_message(
                     user_id,
-                    f"Your premium {mp.get('plan')} plan has expired."
+                    f"❌ Your premium {mp.get('plan')} plan has expired.\n\nUse /plan to renew your subscription."
                 )
             except Exception:
                 pass
@@ -76,26 +77,137 @@ async def is_premium(user_id, bot):
 
 
 async def check_premium(bot):
+    """
+    Background task that runs every 20 minutes to:
+    1. Check expired premium users
+    2. Send expiry reminders (24h, 6h, 1h before expiry)
+    
+    ⚠️ NOTE: This function is now replaced by check_premium_expired() in Premium.py
+    This is kept for backward compatibility only.
+    """
     while True:
-        for p in db.get_premium_users():
-            mp = p.get("status", {})
-            if mp.get("premium") and mp.get("expire") < datetime.now():
-                try:
-                    await bot.send_message(
-                        p["id"],
-                        f"Your premium {mp.get('plan')} plan has expired."
-                    )
-                except Exception:
-                    pass
+        try:
+            current_time = datetime.now()
+            
+            for p in db.get_premium_users():
+                user_id = p.get("id")
+                mp = p.get("status", {})
+                
+                if mp.get("premium") and mp.get("expire"):
+                    expire_time = mp["expire"]
+                    time_left = expire_time - current_time
+                    
+                    # Check if expired
+                    if time_left.total_seconds() <= 0:
+                        try:
+                            await bot.send_message(
+                                user_id,
+                                f"❌ Your premium {mp.get('plan')} plan has expired.\n\n"
+                                f"Expired on: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                f"Use /plan to renew your subscription."
+                            )
+                        except Exception as e:
+                            print(f"Failed to notify user {user_id}: {e}")
 
-                mp.update({
-                    "expire": "",
-                    "plan": "",
-                    "premium": False
-                })
-                db.update_plan(p["id"], mp)
+                        mp.update({
+                            "expire": "",
+                            "plan": "",
+                            "premium": False
+                        })
+                        db.update_plan(user_id, mp)
+                        
+                        # Log to admin channel
+                        try:
+                            await bot.send_message(
+                                LOG_CHANNEL,
+                                f"#PremiumExpired\n\n"
+                                f"User ID: {user_id}\n"
+                                f"Plan: {mp.get('plan', 'Unknown')}\n"
+                                f"Expired: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+                        except:
+                            pass
+                    
+                    # Send reminders
+                    else:
+                        hours_left = time_left.total_seconds() / 3600
+                        
+                        # 24 hour reminder
+                        if 23.5 <= hours_left <= 24.5 and not mp.get("reminded_24h"):
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    f"⏰ <b>Premium Expiry Reminder</b>\n\n"
+                                    f"Your premium {mp.get('plan')} plan will expire in 24 hours.\n"
+                                    f"Expiry time: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                    f"Use /plan to renew your subscription.",
+                                    parse_mode=enums.ParseMode.HTML
+                                )
+                                mp["reminded_24h"] = True
+                                db.update_plan(user_id, mp)
+                            except Exception as e:
+                                print(f"Failed to send 24h reminder to {user_id}: {e}")
+                        
+                        # 6 hour reminder
+                        elif 5.5 <= hours_left <= 6.5 and not mp.get("reminded_6h"):
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    f"⚠️ <b>Premium Expiry Alert</b>\n\n"
+                                    f"Your premium {mp.get('plan')} plan will expire in 6 hours.\n"
+                                    f"Expiry time: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                    f"Use /plan to renew now!",
+                                    parse_mode=enums.ParseMode.HTML
+                                )
+                                mp["reminded_6h"] = True
+                                db.update_plan(user_id, mp)
+                            except Exception as e:
+                                print(f"Failed to send 6h reminder to {user_id}: {e}")
+                        
+                        # 1 hour reminder
+                        elif 0.5 <= hours_left <= 1.5 and not mp.get("reminded_1h"):
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    f"🚨 <b>URGENT: Premium Expiring Soon</b>\n\n"
+                                    f"Your premium {mp.get('plan')} plan will expire in 1 hour!\n"
+                                    f"Expiry time: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                    f"Renew immediately to avoid service interruption: /plan",
+                                    parse_mode=enums.ParseMode.HTML
+                                )
+                                mp["reminded_1h"] = True
+                                db.update_plan(user_id, mp)
+                            except Exception as e:
+                                print(f"Failed to send 1h reminder to {user_id}: {e}")
+            
+            # Check every 20 minutes (1200 seconds)
+            await asyncio.sleep(1200)
+            
+        except Exception as e:
+            print(f"Error in check_premium: {e}")
+            await asyncio.sleep(1200)
 
-        await asyncio.sleep(1200)
+
+def get_premium_button():
+    """Get standard premium button"""
+    return InlineKeyboardButton('💎 Buy Premium', url=f"https://t.me/{temp.U_NAME}?start=premium")
+
+
+def premium_required(func):
+    """Decorator to check if user has premium access"""
+    async def wrapper(client, message):
+        if not await is_premium(message.from_user.id, client):
+            from hydrogram.types import InlineKeyboardMarkup
+            btn = [[get_premium_button()]]
+            return await message.reply(
+                '🔒 <b>Premium Feature</b>\n\n'
+                'This feature is only available for premium users!\n\n'
+                'Use /plan to activate premium subscription.',
+                reply_markup=InlineKeyboardMarkup(btn),
+                parse_mode=enums.ParseMode.HTML
+            )
+        return await func(client, message)
+    return wrapper
 
 
 # ─────────────────────────────────────────────
