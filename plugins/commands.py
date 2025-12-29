@@ -131,6 +131,74 @@ async def start(client, message):
             ]])
         )
 
+    # Handle /start with file_id parameter (जैसे /start files_123_xyz)
+    if len(message.command) > 1:
+        mc = message.command[1]
+        
+        # Parse: files_grp_id_file_id or file_grp_id_file_id
+        try:
+            parts = mc.split("_")
+            if len(parts) >= 3:
+                # Extract grp_id and file_id
+                grp_id = parts[1]
+                file_id = parts[2]
+                
+                # Get file details from database
+                files_ = await get_file_details(file_id)
+                if not files_:
+                    return await message.reply('No Such File Exist!')
+                
+                files = files_
+                settings = await get_settings(int(grp_id))
+                
+                # Build caption
+                CAPTION = settings.get('caption', '{file_name}\n\n💾 Size: {file_size}')
+                f_caption = CAPTION.format(
+                    file_name=files.get('file_name', 'File'),
+                    file_size=get_size(files.get('file_size', 0)),
+                    file_caption=files.get('caption', '')
+                )
+                
+                # Build buttons based on IS_STREAM setting
+                if IS_STREAM:
+                    btn = [[
+                        InlineKeyboardButton("✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}")
+                    ],[
+                        InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+                    ]]
+                else:
+                    btn = [[
+                        InlineKeyboardButton('⁉️ ᴄʟᴏsᴇ ⁉️', callback_data='close_data')
+                    ]]
+                
+                # Send file
+                vp = await client.send_cached_media(
+                    chat_id=message.from_user.id,
+                    file_id=file_id,
+                    caption=f_caption,
+                    protect_content=False,
+                    reply_markup=InlineKeyboardMarkup(btn)
+                )
+                
+                # Auto delete after PM_FILE_DELETE_TIME
+                if PM_FILE_DELETE_TIME and PM_FILE_DELETE_TIME > 0:
+                    time = get_readable_time(PM_FILE_DELETE_TIME)
+                    msg = await vp.reply(
+                        f"Nᴏᴛᴇ: Tʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇ ɪɴ {time} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛs."
+                    )
+                    await asyncio.sleep(PM_FILE_DELETE_TIME)
+                    try:
+                        await msg.delete()
+                        await vp.delete()
+                    except:
+                        pass
+                return
+        except Exception as e:
+            print(f"Error parsing start command: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Default /start response
     if len(message.command) == 1:
         await message.reply_photo(
             random.choice(PICS),
@@ -188,74 +256,11 @@ Archive   {progress_bar(archive,total)} {archive}
     await message.reply_text(text, parse_mode=enums.ParseMode.HTML)
 
 # ─────────────────────────
-# FILE CLICK HANDLER (जब user file result पर click करे)
-# ─────────────────────────
-@Client.on_callback_query(filters.regex(r"^files#|^file#"))
-async def send_file(client, query):
-    """Handle file button clicks from search results"""
-    try:
-        # Extract file_id from callback data (supports both files# and file#)
-        ident, file_id = query.data.split("#", 1)
-        
-        # Get file details from database
-        files = await get_file_details(file_id)
-        
-        if not files:
-            return await query.answer("❌ File not found in database!", show_alert=True)
-        
-        # Answer callback to remove loading
-        await query.answer()
-        
-        # Get first file (in case multiple files returned)
-        file = files[0] if isinstance(files, list) else files
-        
-        # Get file info
-        file_name = file.get('file_name', 'Unknown File')
-        file_size = get_size(file.get('file_size', 0))
-        file_caption = file.get('caption', '')
-        
-        # Build caption
-        caption = f"📁 <b>{file_name}</b>\n\n"
-        caption += f"📊 <b>Size:</b> {file_size}\n"
-        if file_caption:
-            caption += f"\n{file_caption}"
-        
-        # Create buttons with streaming option
-        buttons = [
-            [
-                InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")
-            ],
-            [
-                InlineKeyboardButton("❌ Close", callback_data="close_data")
-            ]
-        ]
-        
-        # Send file with buttons
-        sent_msg = await client.send_cached_media(
-            chat_id=query.message.chat.id,
-            file_id=file.get('file_id'),
-            caption=caption,
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=query.message.id
-        )
-        
-        # Auto delete after PM_FILE_DELETE_TIME
-        if PM_FILE_DELETE_TIME and PM_FILE_DELETE_TIME > 0:
-            asyncio.create_task(auto_delete_message(sent_msg, PM_FILE_DELETE_TIME))
-                
-    except Exception as e:
-        print(f"❌ Error in send_file: {e}")
-        import traceback
-        traceback.print_exc()
-        await query.answer("❌ Error sending file! Check logs.", show_alert=True)
-
-# ─────────────────────────
-# STREAM BUTTON (Watch/Download button पर click करने पर)
+# STREAM CALLBACK → Generate Watch/Download Links
 # ─────────────────────────
 @Client.on_callback_query(filters.regex(r"^stream#"))
 async def stream_cb(client, query):
-    """Generate streaming and download links"""
+    """When user clicks 'Watch & Download' button"""
     try:
         file_id = query.data.split("#", 1)[1]
         
@@ -266,40 +271,42 @@ async def stream_cb(client, query):
         if not files:
             return await query.answer("❌ File not found!", show_alert=True)
         
+        # Handle both list and dict response
         file = files[0] if isinstance(files, list) else files
         
-        # Send file to BIN_CHANNEL to generate links
+        # Send file to BIN_CHANNEL to get message_id for streaming
         msg = await client.send_cached_media(
             chat_id=BIN_CHANNEL,
-            file_id=file.get('file_id')
+            file_id=file_id
         )
 
-        # Generate streaming links
-        online_link = f"{URL}watch/{msg.id}"
-        download_link = f"{URL}download/{msg.id}"
+        # Generate streaming URLs
+        watch = f"{URL}watch/{msg.id}"
+        download = f"{URL}download/{msg.id}"
 
         # Create buttons with links
         buttons = [
             [
-                InlineKeyboardButton("▶️ Watch Online", url=online_link),
-                InlineKeyboardButton("⬇️ Download", url=download_link)
+                InlineKeyboardButton("▶️ ᴡᴀᴛᴄʜ ᴏɴʟɪɴᴇ", url=watch),
+                InlineKeyboardButton("⬇️ ꜰᴀsᴛ ᴅᴏᴡɴʟᴏᴀᴅ", url=download)
             ],
             [
-                InlineKeyboardButton("❌ Close", callback_data="close_data")
+                InlineKeyboardButton("❌ ᴄʟᴏsᴇ", callback_data="close_data")
             ]
         ]
 
-        # Edit message with links
+        # Try to edit the message buttons
         try:
             await query.message.edit_reply_markup(
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
-        except:
+        except Exception as e:
             # If edit fails, send new message
+            print(f"Failed to edit markup: {e}")
             await query.message.reply_text(
-                "🎬 <b>Your Links:</b>\n\n"
+                "🎬 <b>Your Links Are Ready:</b>\n\n"
                 "▶️ Click <b>Watch Online</b> to stream\n"
-                "⬇️ Click <b>Download</b> to save",
+                "⬇️ Click <b>Fast Download</b> to save",
                 reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode=enums.ParseMode.HTML
             )
