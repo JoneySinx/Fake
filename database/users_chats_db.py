@@ -21,13 +21,14 @@ client = MongoClient(
     minPoolSize=10,
     maxIdleTimeMS=45000
 )
-db = client[DATABASE_NAME]
+_db = client[DATABASE_NAME]
 
 
 # ─────────────────────────────────────────────
 # 🧠 DATABASE CLASS
 # ─────────────────────────────────────────────
 class Database:
+
     # Minimal & required group settings only
     default_setgs = {
         "file_secure": PROTECT_CONTENT,
@@ -46,16 +47,16 @@ class Database:
     }
 
     def __init__(self):
-        self.users = db.Users
-        self.groups = db.Groups
-        self.premium = db.Premiums
-        self.connections = db.Connections
-        self.settings = db.Settings
+        self.users = _db.Users
+        self.groups = _db.Groups
+        self.premium = _db.Premiums
+        self.connections = _db.Connections
+        self.settings = _db.Settings
 
     # ───────── USERS ─────────
     def new_user(self, user_id, name):
         return {
-            "id": user_id,
+            "id": int(user_id),
             "name": name,
             "ban_status": {
                 "is_banned": False,
@@ -97,7 +98,7 @@ class Database:
     # ───────── GROUPS ─────────
     def new_group(self, group_id, title):
         return {
-            "id": group_id,
+            "id": int(group_id),
             "title": title,
             "chat_status": {
                 "is_disabled": False,
@@ -147,15 +148,15 @@ class Database:
 
     # ───────── PREMIUM ─────────
     def get_plan(self, user_id):
-        st = self.premium.find_one({"id": user_id})
+        st = self.premium.find_one({"id": int(user_id)})
         return st["status"] if st else self.default_prm
 
     def update_plan(self, user_id, data):
-        if not self.premium.find_one({"id": user_id}):
-            self.premium.insert_one({"id": user_id, "status": data})
+        if not self.premium.find_one({"id": int(user_id)}):
+            self.premium.insert_one({"id": int(user_id), "status": data})
         else:
             self.premium.update_one(
-                {"id": user_id},
+                {"id": int(user_id)},
                 {"$set": {"status": data}}
             )
 
@@ -167,20 +168,20 @@ class Database:
 
     # ───────── CONNECTIONS ─────────
     def add_connect(self, group_id, user_id):
-        user = self.connections.find_one({"_id": user_id})
+        user = self.connections.find_one({"_id": int(user_id)})
         if user:
             if group_id not in user["group_ids"]:
                 self.connections.update_one(
-                    {"_id": user_id},
+                    {"_id": int(user_id)},
                     {"$push": {"group_ids": group_id}}
                 )
         else:
             self.connections.insert_one(
-                {"_id": user_id, "group_ids": [group_id]}
+                {"_id": int(user_id), "group_ids": [group_id]}
             )
 
     def get_connections(self, user_id):
-        user = self.connections.find_one({"_id": user_id})
+        user = self.connections.find_one({"_id": int(user_id)})
         return user["group_ids"] if user else []
 
     # ───────── BOT SETTINGS ─────────
@@ -195,6 +196,28 @@ class Database:
 
     def get_bot_sttgs(self):
         return self.settings.find_one({"id": BOT_ID}) or {}
+
+    # ───────── STARTUP SUPPORT ─────────
+    async def get_banned(self):
+        """
+        Used at bot startup
+        """
+        banned_users = []
+        banned_chats = []
+
+        try:
+            for u in self.users.find({"ban_status.is_banned": True}):
+                banned_users.append(u["id"])
+        except Exception:
+            pass
+
+        try:
+            for g in self.groups.find({"chat_status.is_disabled": True}):
+                banned_chats.append(g["id"])
+        except Exception:
+            pass
+
+        return banned_users, banned_chats
 
 
 # ─────────────────────────────────────────────
