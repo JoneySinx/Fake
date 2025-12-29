@@ -128,7 +128,7 @@ async def get_search_results(
     max_results=MAX_BTN,
     offset=0,
     lang=None,
-    collection_type="primary"  # ✅ Changed from "all" to "primary"
+    collection_type="primary"
 ):
     query = normalize_query(query)
     prefix = prefix_query(query)
@@ -174,17 +174,41 @@ async def get_search_results(
     return results, next_offset, total
 
 # ─────────────────────────────────────────
-# 🗑 DELETE (FAST)
+# 🗑 DELETE FILES (IMPROVED)
 # ─────────────────────────────────────────
 async def delete_files(query, collection_type="all"):
+    """
+    Delete files from database
+    
+    Args:
+        query: File name to search (use "*" for all files)
+        collection_type: "primary", "cloud", "archive", or "all"
+    
+    Returns:
+        Number of deleted files
+    """
+    deleted = 0
+    
+    # Special case: Delete ALL files
+    if query == "*":
+        for name, col in COLLECTIONS.items():
+            if collection_type != "all" and name != collection_type:
+                continue
+            result = col.delete_many({})
+            deleted += result.deleted_count
+            logger.info(f"Deleted {result.deleted_count} files from {name}")
+        return deleted
+    
+    # Normal case: Delete by query
     query = normalize_query(query)
     flt = _text_filter(query)
-    deleted = 0
 
     for name, col in COLLECTIONS.items():
         if collection_type != "all" and name != collection_type:
             continue
-        deleted += col.delete_many(flt).deleted_count
+        result = col.delete_many(flt)
+        deleted += result.deleted_count
+        logger.info(f"Deleted {result.deleted_count} files matching '{query}' from {name}")
 
     return deleted
 
@@ -202,20 +226,56 @@ async def get_file_details(file_id):
 # 🔁 MOVE FILES (SAFE)
 # ─────────────────────────────────────────
 async def move_files(query, from_collection, to_collection):
+    """
+    Move files from one collection to another
+    
+    Args:
+        query: Search query to find files
+        from_collection: Source collection ("primary", "cloud", or "archive")
+        to_collection: Destination collection ("primary", "cloud", or "archive")
+    
+    Returns:
+        Number of moved files
+    """
     query = normalize_query(query)
-    src = COLLECTIONS[from_collection]
-    dst = COLLECTIONS[to_collection]
+    src = COLLECTIONS.get(from_collection)
+    dst = COLLECTIONS.get(to_collection)
+    
+    if not src or not dst:
+        logger.error(f"Invalid collection names: {from_collection} -> {to_collection}")
+        return 0
 
     moved = 0
     for doc in src.find(_text_filter(query)):
         try:
             dst.insert_one(doc)
         except DuplicateKeyError:
+            logger.warning(f"File {doc['_id']} already exists in {to_collection}")
             pass
         src.delete_one({"_id": doc["_id"]})
         moved += 1
 
+    logger.info(f"Moved {moved} files from {from_collection} to {to_collection}")
     return moved
+
+# ─────────────────────────────────────────
+# 📋 GET ALL FILES FROM COLLECTION
+# ─────────────────────────────────────────
+async def get_all_files(collection_type="primary", limit=100, skip=0):
+    """
+    Get all files from a specific collection
+    
+    Args:
+        collection_type: "primary", "cloud", or "archive"
+        limit: Number of files to return
+        skip: Number of files to skip (for pagination)
+    
+    Returns:
+        List of file documents
+    """
+    col = COLLECTIONS.get(collection_type, primary)
+    files = list(col.find().skip(skip).limit(limit))
+    return files
 
 # ─────────────────────────────────────────
 # 🔐 FILE ID UTILS
