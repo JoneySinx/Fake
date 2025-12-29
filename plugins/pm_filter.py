@@ -101,6 +101,118 @@ async def group_search(client, message):
         except:
             pass
 
+@Client.on_callback_query(filters.regex(r"^coll_filter"))
+async def collection_filter(bot, query):
+    _, coll_type, key, req, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    
+    search = BUTTONS.get(key)
+    if not search:
+        return await query.answer("Send New Request Again!", show_alert=True)
+    
+    # Search in specific collection
+    files, n_offset, total = await get_search_results(search, collection_type=coll_type)
+    if not files:
+        return await query.answer(f"No files found in {coll_type.title()} collection!", show_alert=True)
+    
+    temp.FILES[key] = files
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    
+    # File links with folder emoji
+    files_text = ""
+    for file in files:
+        files_text += f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}'>[{get_size(file['file_size'])}] {file['file_name']}</a>\n\n"
+    
+    cap = f"<b>👑 Search: {search}\n📚 Collection: {coll_type.title()}\n🎬 Total Files: {total}\n📄 Page: 1 / {math.ceil(total/MAX_BTN) if total > 0 else 1}</b>\n\n"
+    
+    btn = []
+    if n_offset:
+        btn.append([
+            InlineKeyboardButton(f"1/{math.ceil(total/MAX_BTN)}", callback_data="buttons"),
+            InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"coll_next#{coll_type}#{key}#{req}#{n_offset}")
+        ])
+    
+    btn.append([InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ", callback_data=f"send_all#{key}#{req}")])
+    btn.append([
+        InlineKeyboardButton(f"{'✅' if coll_type=='primary' else '📂'} Primary", callback_data=f"coll_filter#primary#{key}#{req}#{offset}"),
+        InlineKeyboardButton(f"{'✅' if coll_type=='cloud' else '☁️'} Cloud", callback_data=f"coll_filter#cloud#{key}#{req}#{offset}"),
+        InlineKeyboardButton(f"{'✅' if coll_type=='archive' else '📦'} Archive", callback_data=f"coll_filter#archive#{key}#{req}#{offset}")
+    ])
+    btn.append([InlineKeyboardButton('❌ ᴄʟᴏsᴇ', callback_data='close_data')])
+    
+    await query.message.edit_text(cap + files_text + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+
+@Client.on_callback_query(filters.regex(r"^coll_next"))
+async def collection_next_page(bot, query):
+    _, coll_type, key, req, offset = query.data.split("#")
+    if int(req) != query.from_user.id:
+        return await query.answer(f"Hello {query.from_user.first_name},\nDon't Click Other Results!", show_alert=True)
+    
+    try:
+        offset = int(offset)
+    except:
+        offset = 0
+    
+    search = BUTTONS.get(key)
+    if not search:
+        return await query.answer("Send New Request Again!", show_alert=True)
+    
+    files, n_offset, total = await get_search_results(search, offset=offset, collection_type=coll_type)
+    if not files:
+        return
+    
+    temp.FILES[key] = files
+    settings = await get_settings(query.message.chat.id)
+    del_msg = f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>" if settings["auto_delete"] else ''
+    
+    files_text = ""
+    for file in files:
+        files_text += f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}'>[{get_size(file['file_size'])}] {file['file_name']}</a>\n\n"
+    
+    try:
+        n_offset = int(n_offset)
+    except:
+        n_offset = 0
+    
+    btn = []
+    if 0 < offset <= MAX_BTN:
+        off_set = 0
+    elif offset == 0:
+        off_set = None
+    else:
+        off_set = offset - MAX_BTN
+    
+    if n_offset == 0:
+        btn.append([
+            InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"coll_next#{coll_type}#{key}#{req}#{off_set}"),
+            InlineKeyboardButton(f"{math.ceil(offset/MAX_BTN)+1}/{math.ceil(total/MAX_BTN)}", callback_data="buttons")
+        ])
+    elif off_set is None:
+        btn.append([
+            InlineKeyboardButton(f"{math.ceil(offset/MAX_BTN)+1}/{math.ceil(total/MAX_BTN)}", callback_data="buttons"),
+            InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"coll_next#{coll_type}#{key}#{req}#{n_offset}")
+        ])
+    else:
+        btn.append([
+            InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"coll_next#{coll_type}#{key}#{req}#{off_set}"),
+            InlineKeyboardButton(f"{math.ceil(offset/MAX_BTN)+1}/{math.ceil(total/MAX_BTN)}", callback_data="buttons"),
+            InlineKeyboardButton("ɴᴇxᴛ »", callback_data=f"coll_next#{coll_type}#{key}#{req}#{n_offset}")
+        ])
+    
+    btn.append([InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ", callback_data=f"send_all#{key}#{req}")])
+    btn.append([
+        InlineKeyboardButton(f"{'✅' if coll_type=='primary' else '📂'} Primary", callback_data=f"coll_filter#primary#{key}#{req}#{offset}"),
+        InlineKeyboardButton(f"{'✅' if coll_type=='cloud' else '☁️'} Cloud", callback_data=f"coll_filter#cloud#{key}#{req}#{offset}"),
+        InlineKeyboardButton(f"{'✅' if coll_type=='archive' else '📦'} Archive", callback_data=f"coll_filter#archive#{key}#{req}#{offset}")
+    ])
+    btn.append([InlineKeyboardButton('❌ ᴄʟᴏsᴇ', callback_data='close_data')])
+    
+    cap = f"<b>👑 Search: {search}\n📚 Collection: {coll_type.title()}\n🎬 Total Files: {total}\n📄 Page: {math.ceil(offset/MAX_BTN)+1} / {math.ceil(total/MAX_BTN)}</b>\n\n"
+    
+    await query.message.edit_text(cap + files_text + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
+
 @Client.on_callback_query(filters.regex(r"^next"))
 async def next_page(bot, query):
     ident, req, key, offset = query.data.split("_")
@@ -164,6 +276,11 @@ async def next_page(bot, query):
         )
     
     btn.append([InlineKeyboardButton("♻️ sᴇɴᴅ ᴀʟʟ", callback_data=f"send_all#{key}#{req}")])
+    btn.append([
+        InlineKeyboardButton("📂 Primary", callback_data=f"coll_filter#primary#{key}#{req}#{offset}"),
+        InlineKeyboardButton("☁️ Cloud", callback_data=f"coll_filter#cloud#{key}#{req}#{offset}"),
+        InlineKeyboardButton("📦 Archive", callback_data=f"coll_filter#archive#{key}#{req}#{offset}")
+    ])
     btn.append([InlineKeyboardButton('❌ ᴄʟᴏsᴇ', callback_data='close_data')])
     
     await query.message.edit_text(cap + "\n\n" + files_text + del_msg, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, parse_mode=enums.ParseMode.HTML)
@@ -184,7 +301,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         except:
             pass
   
-
+None
 
     elif query.data == "buttons":
         await query.answer()
