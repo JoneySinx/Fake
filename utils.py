@@ -56,22 +56,43 @@ async def is_premium(user_id, bot):
 
     mp = db.get_plan(user_id)
     if mp.get("premium"):
-        if mp.get("expire") and mp["expire"] < datetime.now():
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"❌ Your premium {mp.get('plan')} plan has expired.\n\nUse /plan to renew your subscription."
-                )
-            except Exception:
-                pass
+        expire = mp.get("expire")
+        
+        # ✅ Handle expire field (can be string, datetime, or empty)
+        if expire:
+            # Convert string to datetime if needed
+            if isinstance(expire, str):
+                try:
+                    from dateutil import parser
+                    expire = parser.parse(expire)
+                except:
+                    # If parsing fails, assume expired
+                    mp.update({
+                        "expire": "",
+                        "plan": "",
+                        "premium": False
+                    })
+                    db.update_plan(user_id, mp)
+                    return False
+            
+            # Check if expired
+            if expire < datetime.now():
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"❌ Your premium {mp.get('plan')} plan has expired.\n\nUse /plan to renew your subscription."
+                    )
+                except Exception:
+                    pass
 
-            mp.update({
-                "expire": "",
-                "plan": "",
-                "premium": False
-            })
-            db.update_plan(user_id, mp)
-            return False
+                mp.update({
+                    "expire": "",
+                    "plan": "",
+                    "premium": False
+                })
+                db.update_plan(user_id, mp)
+                return False
+        
         return True
     return False
 

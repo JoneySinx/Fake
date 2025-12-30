@@ -466,7 +466,7 @@ async def cancel_delete_cb(client, query):
 @Client.on_callback_query(filters.regex("^myplan$"))
 async def myplan_cb(client, query):
     """Handle myplan button callback"""
-    from plugins.premium import TRIAL_ENABLED
+    from plugins.Premium import TRIAL_ENABLED
     
     if not IS_PREMIUM:
         return await query.answer('Premium feature was disabled by admin', show_alert=True)
@@ -492,14 +492,32 @@ async def myplan_cb(client, query):
             reply_markup=InlineKeyboardMarkup(btn)
         )
     
-    expire_time = mp['expire']
+    # ✅ Handle expire_time properly (can be string or datetime)
+    expire_time = mp.get('expire')
+    
+    # Convert string to datetime if needed
+    if isinstance(expire_time, str):
+        try:
+            from dateutil import parser
+            expire_time = parser.parse(expire_time)
+        except:
+            # Fallback: show without time calculation
+            return await query.message.edit_text(
+                f"✅ <b>Your Premium Status</b>\n\n"
+                f"📦 Plan: {mp.get('plan', 'Unknown')}\n"
+                f"⏰ Status: Active\n\n"
+                f"💡 Use /plan to extend your subscription.",
+                parse_mode=enums.ParseMode.HTML
+            )
+    
+    # Calculate time left
     time_left = expire_time - datetime.now()
-    days_left = time_left.days
-    hours_left = time_left.seconds // 3600
+    days_left = max(0, time_left.days)
+    hours_left = max(0, time_left.seconds // 3600)
     
     await query.message.edit_text(
         f"✅ <b>Your Premium Status</b>\n\n"
-        f"📦 Plan: {mp['plan']}\n"
+        f"📦 Plan: {mp.get('plan', 'Unknown')}\n"
         f"⏰ Expires: {expire_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"⏳ Time Left: {days_left} days {hours_left} hours\n\n"
         f"💡 Use /plan to extend your subscription.",
