@@ -38,6 +38,10 @@ from utils import temp, get_readable_time
 from database.users_chats_db import db
 from pymongo import MongoClient
 
+# ✅ Import for Indian time
+from datetime import datetime
+import pytz
+
 # -------------------- IMPORT PREMIUM MODULE --------------------
 from plugins.premium import check_premium_expired
 
@@ -99,7 +103,33 @@ class Bot(Client):
         # ✅ Premium expiry checker (FROM PREMIUM.PY)
         asyncio.create_task(check_premium_expired(self))
         
-        # Startup log
+        # ✅ Get Indian time
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+        date_str = current_time.strftime("%d %B %Y")  # 30 December 2025
+        time_str = current_time.strftime("%I:%M:%S %p")  # 02:30:45 PM
+        
+        # ✅ Send startup notification to all admins
+        startup_msg = (
+            f"🤖 <b>Bot Started Successfully!</b>\n\n"
+            f"📅 <b>Date:</b> {date_str}\n"
+            f"🕐 <b>Time:</b> {time_str}\n"
+            f"🌏 <b>Timezone:</b> IST (Asia/Kolkata)\n\n"
+            f"✅ <b>Status:</b> Online & Running"
+        )
+        
+        # Send to all admins
+        for admin_id in ADMINS:
+            try:
+                await self.send_message(
+                    chat_id=admin_id,
+                    text=startup_msg
+                )
+                logger.info(f"Startup notification sent to admin: {admin_id}")
+            except Exception as e:
+                logger.error(f"Failed to send startup notification to {admin_id}: {e}")
+        
+        # Startup log to channel
         try:
             await self.send_message(
                 LOG_CHANNEL,
