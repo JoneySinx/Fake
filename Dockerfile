@@ -1,5 +1,5 @@
 # ==========================================
-# ⚡ PRODUCTION-READY DOCKERFILE (TESTED)
+# ⚡ PRODUCTION-READY DOCKERFILE (FIXED)
 # Python 3.12 | Debian Bookworm | Multi-stage
 # Build Time: ~2 min | Image Size: ~180 MB
 # ==========================================
@@ -33,12 +33,8 @@ RUN pip install --no-cache-dir --upgrade \
 COPY requirements.txt /tmp/
 
 # Install all dependencies in user directory
-# This ensures they go to /root/.local
 RUN pip install --no-cache-dir --user \
     -r /tmp/requirements.txt
-
-# Verify installation
-RUN ls -la /root/.local/lib/python*/site-packages/ || true
 
 # Pre-compile Python bytecode
 RUN python -m compileall /root/.local 2>/dev/null || true
@@ -64,6 +60,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -87,16 +84,16 @@ ENV PATH=/home/botuser/.local/bin:$PATH
 # Switch to non-root user
 USER botuser
 
-# Pre-warm imports
+# Pre-warm imports (suppress errors)
 RUN python -c "import sys; print(f'Python {sys.version}')" && \
-    python -c "import hydrogram, pymongo, aiohttp" 2>/dev/null || true
+    python -c "import hydrogram, pymongo, aiohttp" 2>/dev/null || echo "Imports will load at runtime"
 
-# Health check
-HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=2 \
-    CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('127.0.0.1', 8080)); s.close()" || exit 1
+# ✅ FIXED: Health check uses environment PORT variable
+HEALTHCHECK --interval=60s --timeout=10s --start-period=45s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Expose port
-EXPOSE 8080
+# ✅ FIXED: Expose correct port (Koyeb uses 8000 by default)
+EXPOSE 8000
 
 # Graceful shutdown
 STOPSIGNAL SIGTERM
