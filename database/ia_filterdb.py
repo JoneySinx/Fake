@@ -43,7 +43,7 @@ def ensure_indexes():
                 [("file_name", TEXT), ("caption", TEXT)],
                 name=f"{name}_text"
             )
-            logger.info(f"Index created/verified for {name}")
+            # Silent - no logs for index creation
         except Exception as e:
             logger.error(f"Index creation failed for {name}: {e}")
 
@@ -113,10 +113,10 @@ async def save_file(media, collection_type="primary"):
         col = COLLECTIONS.get(collection_type, primary)
 
         col.insert_one(doc)
-        logger.info(f"File saved: {doc['file_name']} to {collection_type}")
+        # Silent - no logs for file save
         return "suc"
     except DuplicateKeyError:
-        logger.debug(f"Duplicate file: {media.file_name}")
+        # Silent - no logs for duplicate
         return "dup"
     except Exception as e:
         logger.error(f"Error saving file: {e}")
@@ -229,11 +229,11 @@ async def get_search_results(
     if next_offset >= total:
         next_offset = ""
 
-    logger.info(f"Search '{query}' in {collection_type}: {len(results)}/{total} results")
+    # Silent - no logs for search
     return results, next_offset, total
 
 # ─────────────────────────────────────────
-# 🗑 DELETE FILES (IMPROVED)
+# 🗑 DELETE FILES (WITH LOGGING) ✅
 # ─────────────────────────────────────────
 async def delete_files(query, collection_type="all"):
     """
@@ -273,7 +273,8 @@ async def delete_files(query, collection_type="all"):
             result = col.delete_many(flt)
             deleted += result.deleted_count
             if result.deleted_count > 0:
-                logger.info(f"Deleted {result.deleted_count} files matching '{query}' from {name}")
+                # ✅ DELETE LOG - Shows in Koyeb
+                logger.info(f"🗑️ Deleted {result.deleted_count} files matching '{query}' from {name}")
 
         return deleted
     
@@ -305,7 +306,7 @@ async def get_file_details(file_id):
         return None
 
 # ─────────────────────────────────────────
-# 🔁 MOVE FILES (SAFE)
+# 🔁 MOVE FILES (WITH LOGGING) ✅
 # ─────────────────────────────────────────
 async def move_files(query, from_collection, to_collection):
     """
@@ -339,13 +340,15 @@ async def move_files(query, from_collection, to_collection):
                 src.delete_one({"_id": doc["_id"]})
                 moved += 1
             except DuplicateKeyError:
-                logger.warning(f"File {doc['_id']} already exists in {to_collection}")
                 src.delete_one({"_id": doc["_id"]})
                 moved += 1
             except Exception as e:
                 logger.error(f"Error moving file {doc['_id']}: {e}")
 
-        logger.info(f"Moved {moved} files from {from_collection} to {to_collection}")
+        # ✅ MOVE LOG - Shows in Koyeb
+        if moved > 0:
+            logger.info(f"📦 Moved {moved} files from {from_collection} → {to_collection}")
+        
         return moved
     
     except Exception as e:
