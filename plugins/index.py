@@ -3,7 +3,7 @@ import time
 import asyncio
 from hydrogram import Client, filters, enums
 from hydrogram.errors import FloodWait
-from info import ADMINS, INDEX_EXTENSIONS
+from info import ADMINS
 from database.ia_filterdb import save_file
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
@@ -63,60 +63,73 @@ async def index_files(bot, query):
         await query.message.edit("Trying to cancel Indexing...")
 
 
-@Client.on_message(filters.command('index') & filters.private & filters.user(ADMINS))
-async def send_for_index(bot, message):
+# Auto-index when forwarded message or channel link is sent
+@Client.on_message(filters.private & filters.user(ADMINS) & (filters.forwarded | filters.text))
+async def auto_index(bot, message):
+    # Skip if it's a command or regular chat
+    if message.text and not message.text.startswith("https://t.me"):
+        if not message.forward_from_chat:
+            return
+    
     if lock.locked():
-        return await message.reply('Wait until previous process complete.')
+        return await message.reply('⏳ Wait until previous indexing process completes.')
     
-    i = await message.reply("Forward last message or send last message link.")
-    msg = await bot.listen(chat_id=message.chat.id, user_id=message.from_user.id)
-    await i.delete()
+    # Handle forwarded messages
+    if message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
+        last_msg_id = message.forward_from_message_id
+        chat_id = message.forward_from_chat.username or message.forward_from_chat.id
     
-    if msg.text and msg.text.startswith("https://t.me"):
+    # Handle channel links
+    elif message.text and message.text.startswith("https://t.me"):
         try:
-            msg_link = msg.text.split("/")
+            msg_link = message.text.split("/")
             last_msg_id = int(msg_link[-1])
             chat_id = msg_link[-2]
             if chat_id.isnumeric():
                 chat_id = int(("-100" + chat_id))
         except:
-            await message.reply('Invalid message link!')
-            return
-    elif msg.forward_from_chat and msg.forward_from_chat.type == enums.ChatType.CHANNEL:
-        last_msg_id = msg.forward_from_message_id
-        chat_id = msg.forward_from_chat.username or msg.forward_from_chat.id
+            return await message.reply('❌ Invalid message link!')
     else:
-        await message.reply('This is not forwarded message or link.')
         return
     
     try:
         chat = await bot.get_chat(chat_id)
     except Exception as e:
-        return await message.reply(f'Errors - {e}')
+        return await message.reply(f'❌ Error: {e}')
 
     if chat.type != enums.ChatType.CHANNEL:
-        return await message.reply("I can index only channels.")
+        return await message.reply("⚠️ I can only index channels.")
 
-    s = await message.reply("Send skip message number.")
+    # Ask for skip number
+    s = await message.reply("📝 Send skip message number (or send 0 to start from beginning):")
     msg = await bot.listen(chat_id=message.chat.id, user_id=message.from_user.id)
     await s.delete()
     
     try:
         skip = int(msg.text)
     except:
-        return await message.reply("Number is invalid.")
+        return await message.reply("❌ Invalid number.")
 
-    buttons = [[
-        InlineKeyboardButton('YES', callback_data=f'index#yes#{chat_id}#{last_msg_id}#{skip}')
-    ],[
-        InlineKeyboardButton('CLOSE', callback_data='close_data'),
-    ]]
-    reply_markup = InlineKeyboardMarkup(buttons)
+    # Show collection selection directly
+    buttons = [
+        [
+            InlineKeyboardButton('✅ PRIMARY', callback_data=f'index#start#{chat_id}#{last_msg_id}#{skip}#primary'),
+            InlineKeyboardButton('📂 CLOUD', callback_data=f'index#start#{chat_id}#{last_msg_id}#{skip}#cloud')
+        ],
+        [
+            InlineKeyboardButton('📦 ARCHIVES', callback_data=f'index#start#{chat_id}#{last_msg_id}#{skip}#archive')
+        ],
+        [
+            InlineKeyboardButton('❌ CANCEL', callback_data='close_data')
+        ]
+    ]
     await message.reply(
-        f'Do you want to index <b>{chat.title}</b> channel?\n'
-        f'Total Messages: <code>{last_msg_id}</code>\n'
-        f'Skip: <code>{skip}</code>', 
-        reply_markup=reply_markup
+        f'🗂️ <b>Ready to Index:</b>\n\n'
+        f'📢 Channel: <b>{chat.title}</b>\n'
+        f'📨 Total Messages: <code>{last_msg_id}</code>\n'
+        f'⏭️ Skip: <code>{skip}</code>\n\n'
+        f'Select collection to start indexing:',
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -192,8 +205,11 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip, collection_type="p
                 if not media:
                     unsupported += 1
                     continue
-                elif not (str(media.file_name).lower()).endswith(tuple(INDEX_EXTENSIONS)):
-                    unsupported += 1
+                
+                # Check file size - skip files under 2 MB (2097152 bytes)
+                file_size = getattr(media, 'file_size', 0)
+                if file_size < 2097152:  # 2 MB in bytes
+                    badfiles += 1
                     continue
                 
                 media.caption = message.caption
@@ -210,7 +226,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip, collection_type="p
                     errors += 1
                     
         except Exception as e:
-            await msg.reply(f'Index canceled due to Error - {e}')
+            await msg.reply(f'❌ Index canceled due to Error - {e}')
         else:
             time_taken = get_readable_time(time.time()-start_time)
             await msg.edit(
