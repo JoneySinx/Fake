@@ -11,8 +11,6 @@ from info import USE_CAPTION_FILTER, DATABASE_URL, DATABASE_NAME, MAX_BTN
 
 logger = logging.getLogger(__name__)
 
-# Note: Do NOT import get_search_results here - it causes circular import!
-
 # ─────────────────────────────────────────
 # ⚙️ MONGODB CONNECTION (POOL OPTIMIZED)
 # ─────────────────────────────────────────
