@@ -9,13 +9,10 @@ __pycache__
 .env.*
 venv
 .venv
-Dockerfile
 README.md
 LICENSE
-requirements.txt
 
-# ⚠️ Telegram Session Files (सबसे जरूरी)
-# अगर ये अपलोड हो गए तो बोट लॉगिन नहीं होगा या क्रैश होगा
+# ⚠️ Telegram Session Files
 *.session
 *.session-journal
 
@@ -28,3 +25,4 @@ Thumbs.db
 # Bot Specific
 restart.txt
 downloads/
+
