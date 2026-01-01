@@ -1,6 +1,7 @@
 hydrogram
 tgcrypto
-pymongo
+motor
+dnspython
 aiohttp
 aiofiles
 uvloop
@@ -9,5 +10,5 @@ qrcode
 Pillow
 pytz
 pyromod
-motor
+pymongo
 
