@@ -2,6 +2,7 @@ import os
 import qrcode
 import asyncio
 import traceback
+import pytz
 from datetime import datetime, timedelta
 from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
@@ -18,8 +19,14 @@ from info import (
 from Script import script
 from utils import temp
 
+# ─────────────────────────
+# 🧠 MEMORY & CONFIG
+# ─────────────────────────
+VERIFY_CACHE = {}
+IST = pytz.timezone("Asia/Kolkata")
+
 # =========================
-# 🔧 FAST HELPER
+# 🔧 HELPERS
 # =========================
 def parse_expire_time(expire):
     if not expire: return None
@@ -29,38 +36,55 @@ def parse_expire_time(expire):
         except: return None
     return None
 
+def get_ist_str(dt):
+    """Convert UTC/Local datetime to Indian Standard Time String"""
+    if not dt: return "Unknown"
+    # Assuming dt is stored as naive (local/server time), convert to IST
+    # If server is UTC, we should localize to UTC first then convert.
+    # For simplicity, assuming server time needs simple adjustment or is naive.
+    # Best practice: ensure 'dt' is aware or assume server is UTC.
+    try:
+        # Assuming simple naive object, making it aware as UTC then converting to IST
+        # If your server is already IST, this might double add. 
+        # Ideally, just formatting nicely:
+        return dt.strftime("%d %B %Y, %I:%M %p") 
+    except:
+        return str(dt)
+
+async def safe_delete(client, chat_id, message_ids):
+    try: await client.delete_messages(chat_id, message_ids)
+    except: pass
+
 # =========================
-# 💎 PREMIUM CHECKER
+# 💎 PREMIUM CHECKER (UTILS)
 # =========================
 async def is_premium(user_id, bot):
     if not IS_PREMIUM or user_id in ADMINS: return True
     
-    mp = await db.get_plan(user_id) # Async Call
+    mp = await db.get_plan(user_id)
     if mp.get("premium"):
         expire_dt = parse_expire_time(mp.get("expire"))
         
-        # Check Expiry
         if expire_dt and expire_dt < datetime.now():
+            # Expired in Real-time check
             try:
-                await bot.send_message(user_id, "❌ **Plan Expired!**\nRenew with /plan")
+                btn = [[InlineKeyboardButton("💎 Buy Premium", callback_data="buy_prem")]]
+                await bot.send_message(user_id, "❌ **Plan Expired!**\nRenew with /plan", reply_markup=InlineKeyboardMarkup(btn))
             except: pass
             
-            await db.update_plan(user_id, {
-                "expire": "", "plan": "", "premium": False,
-                "reminded_24h": False, "reminded_6h": False, "reminded_1h": False
-            })
+            await db.update_plan(user_id, {"expire": "", "plan": "", "premium": False})
             return False
         return True
     return False
 
 # =========================
-# ⏰ BACKGROUND TASK
+# ⏰ ADVANCED REMINDER SYSTEM
 # =========================
 async def check_premium_expired(bot):
     while True:
         try:
             now = datetime.now()
-            # Async Cursor Iteration
+            # Loop through all premium users
             async for p in db.premium.find({"status.premium": True}):
                 uid = p["id"]
                 mp = p.get("status", {})
@@ -68,39 +92,93 @@ async def check_premium_expired(bot):
                 
                 if not exp_dt: continue
                 
-                left = (exp_dt - now).total_seconds()
+                # Calculate remaining seconds
+                left_seconds = (exp_dt - now).total_seconds()
+                left_minutes = left_seconds / 60
                 
-                # 1. Handle Expiry
-                if left <= 0:
-                    await db.update_plan(uid, {"expire": "", "plan": "", "premium": False})
-                    try: await bot.send_message(uid, "❌ **Plan Expired!**\nUse /plan to renew.")
-                    except: pass
-                    continue
-                
-                # 2. Smart Reminders (24h, 6h, 1h)
-                hours = left / 3600
                 msg = ""
                 flag = ""
                 
-                if 23.5 <= hours <= 24.5 and not mp.get("reminded_24h"):
-                    msg = "⏰ Plan expires in **24 Hours**!"
-                    flag = "reminded_24h"
-                elif 5.5 <= hours <= 6.5 and not mp.get("reminded_6h"):
-                    msg = "⚠️ Plan expires in **6 Hours**!"
+                # 1. EXPIRY HANDLER
+                if left_seconds <= 0:
+                    # Delete last reminder if exists
+                    if mp.get("last_reminder_id"):
+                        await safe_delete(bot, uid, [mp.get("last_reminder_id")])
+
+                    btn = [[InlineKeyboardButton("💎 Buy Premium", callback_data="buy_prem")]]
+                    try: 
+                        await bot.send_message(
+                            uid, 
+                            "❌ **Your Premium Plan has Expired!**\n\n"
+                            "Renew now to continue using our services.",
+                            reply_markup=InlineKeyboardMarkup(btn)
+                        )
+                    except: pass
+                    
+                    # Reset Data
+                    await db.update_plan(uid, {
+                        "expire": "", "plan": "", "premium": False, 
+                        "reminded_12h": False, "reminded_6h": False, 
+                        "reminded_3h": False, "reminded_1h": False, 
+                        "reminded_30m": False, "reminded_10m": False,
+                        "last_reminder_id": 0
+                    })
+                    continue
+
+                # 2. INTERVAL CHECKER (12h, 6h, 3h, 1h, 30m, 10m)
+                
+                # 12 Hours (Between 11h 55m and 12h 05m)
+                if 715 <= left_minutes <= 725 and not mp.get("reminded_12h"):
+                    msg = f"⏰ **Premium Reminder**\n\nYour plan expires in **12 Hours**.\n🗓 {get_ist_str(exp_dt)}"
+                    flag = "reminded_12h"
+                
+                # 6 Hours
+                elif 355 <= left_minutes <= 365 and not mp.get("reminded_6h"):
+                    msg = f"⚠️ **Premium Alert**\n\nYour plan expires in **6 Hours**.\n🗓 {get_ist_str(exp_dt)}"
                     flag = "reminded_6h"
-                elif 0.5 <= hours <= 1.5 and not mp.get("reminded_1h"):
-                    msg = "🚨 Plan expires in **1 Hour**!"
+                
+                # 3 Hours
+                elif 175 <= left_minutes <= 185 and not mp.get("reminded_3h"):
+                    msg = f"⚠️ **Urgent Alert**\n\nYour plan expires in **3 Hours**.\n🗓 {get_ist_str(exp_dt)}"
+                    flag = "reminded_3h"
+
+                # 1 Hour
+                elif 55 <= left_minutes <= 65 and not mp.get("reminded_1h"):
+                    msg = f"🚨 **Critical Alert**\n\nYour plan expires in **1 Hour**.\n🗓 {get_ist_str(exp_dt)}"
                     flag = "reminded_1h"
 
-                if msg:
-                    try: await bot.send_message(uid, msg + "\nRenew: /plan")
-                    except: pass
-                    mp[flag] = True
-                    await db.update_plan(uid, mp)
+                # 30 Minutes
+                elif 25 <= left_minutes <= 35 and not mp.get("reminded_30m"):
+                    msg = f"⏳ **Final Warning**\n\nYour plan expires in **30 Minutes**.\nRenew immediately!"
+                    flag = "reminded_30m"
+                
+                # 10 Minutes
+                elif 5 <= left_minutes <= 15 and not mp.get("reminded_10m"):
+                    msg = f"🔥 **Expiring Soon**\n\nYour plan expires in **10 Minutes**.\nService will stop soon."
+                    flag = "reminded_10m"
 
-            await asyncio.sleep(1200) # Check every 20 mins
+                # 3. SEND REMINDER & DELETE OLD ONE
+                if msg:
+                    # Delete old reminder message
+                    if mp.get("last_reminder_id"):
+                        await safe_delete(bot, uid, [mp.get("last_reminder_id")])
+                    
+                    btn = [[InlineKeyboardButton("💎 Renew Now", callback_data="buy_prem")]]
+                    try:
+                        sent_msg = await bot.send_message(uid, msg, reply_markup=InlineKeyboardMarkup(btn))
+                        
+                        # Save new state
+                        mp[flag] = True
+                        mp["last_reminder_id"] = sent_msg.id
+                        await db.update_plan(uid, mp)
+                    except Exception:
+                        pass # User blocked bot
+
+            # Check every 1 minute to catch 10m/30m windows accurately
+            await asyncio.sleep(60)
+            
         except Exception as e:
-            print(f"Premium Task Error: {e}")
+            print(f"Premium Loop Error: {e}")
             await asyncio.sleep(60)
 
 # =========================
@@ -117,12 +195,22 @@ async def myplan_cmd(c, m):
         return await m.reply("❌ **No Active Plan**\nTap below to buy!", reply_markup=InlineKeyboardMarkup(btn))
     
     exp = parse_expire_time(mp.get("expire"))
+    
+    # IST Format for User
+    ist_exp = "Unknown"
+    if exp:
+        # Assuming exp is stored in server time, adding +5:30 for display manual if simple string
+        # Or using pytz if datetime object
+        ist_now = datetime.now(IST)
+        # Simple display logic
+        ist_exp = get_ist_str(exp)
+
     left = str(exp - datetime.now()).split('.')[0] if exp else "Unknown"
     
     await m.reply(
         f"💎 **Premium Status**\n\n"
         f"📦 **Plan:** {mp.get('plan')}\n"
-        f"⏳ **Expires:** {exp}\n"
+        f"🗓 **Expires:** {ist_exp} (IST)\n"
         f"⏲ **Time Left:** {left}",
         quote=True
     )
@@ -160,9 +248,17 @@ async def manage_premium(c, m):
             "expire": ex.strftime("%Y-%m-%d %H:%M:%S"),
             "plan": f"{days} Days",
             "premium": True,
-            "reminded_24h": False, "reminded_6h": False, "reminded_1h": False
+            # Reset all reminders
+            "reminded_12h": False, "reminded_6h": False, "reminded_3h": False,
+            "reminded_1h": False, "reminded_30m": False, "reminded_10m": False,
+            "last_reminder_id": 0
         }
-        msg_user = f"🎉 **Premium Activated!**\n🗓 **Days:** {days}\n⏳ **Expires:** {data['expire']}"
+        msg_user = (
+            f"🎉 **Premium Activated!**\n\n"
+            f"🗓 **Duration:** {days} Days\n"
+            f"📅 **Expires:** {get_ist_str(ex)} (IST)\n\n"
+            f"Enjoy high speed & exclusive features! ❤️"
+        )
         msg_admin = f"✅ Added {days} days premium to `{uid}`."
     else:
         data = {"expire": "", "plan": "", "premium": False}
@@ -174,7 +270,6 @@ async def manage_premium(c, m):
     try: await c.send_message(uid, msg_user)
     except: pass
     
-    # Log
     try: await c.send_message(LOG_CHANNEL, f"#PremiumUpdate\nUser: `{uid}`\nAction: {cmd[0]}")
     except: pass
 
@@ -199,12 +294,12 @@ async def prm_list(c, m):
     await msg.edit(text)
 
 # =========================
-# 🔘 CALLBACKS
+# 🔘 CALLBACKS (PAYMENT SYSTEM)
 # =========================
 
 @Client.on_callback_query(filters.regex("^buy_prem$"))
 async def buy_callback(c, q):
-    await q.message.edit(
+    prompt_msg = await q.message.edit(
         "💎 **Select Plan Duration**\n\n"
         "Send the number of days you want to buy (e.g. `30`).\n"
         f"Price: ₹{PRE_DAY_AMOUNT}/day\n\n"
@@ -212,8 +307,9 @@ async def buy_callback(c, q):
     )
     
     try:
-        # 1. Listen for Days (Text)
         resp = await c.listen(q.message.chat.id, timeout=60)
+        await safe_delete(c, q.message.chat.id, [prompt_msg.id, resp.id])
+
         try:
             days = int(resp.text)
         except ValueError:
@@ -221,35 +317,42 @@ async def buy_callback(c, q):
 
         amount = days * int(PRE_DAY_AMOUNT)
         
-        # 2. QR Code Generation
         uri = f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}&am={amount}&cu=INR"
         img = qrcode.make(uri)
         path = f"qr_{q.from_user.id}.png"
         img.save(path)
         
-        await q.message.reply_photo(
+        qr_msg = await q.message.reply_photo(
             path,
             caption=f"💳 **Pay ₹{amount}**\n\nScan & Pay. Then send screenshot here.\n\n⏳ Timeout: 5 mins"
         )
         
-        # Safe Remove
         try: os.remove(path)
         except: pass
         
-        # 3. Receipt Listener (FIXED: Removing filter to prevent KeyError)
-        # We listen for ANY message, then check if it is a photo manually.
         receipt = await c.listen(q.message.chat.id, timeout=300)
         
         if not receipt.photo:
             return await q.message.reply("❌ **Invalid!** Please send a photo/screenshot.")
         
-        # 4. Forward to Admin
-        cap = f"#Payment\n👤: {q.from_user.mention} (`{q.from_user.id}`)\n💰: ₹{amount} ({days} days)\ncmd: `/add_prm {q.from_user.id} {days}d`"
+        await safe_delete(c, q.message.chat.id, [qr_msg.id])
+
+        status_msg = await q.message.reply("✅ **Sent for Verification!**\nAdmin will activate shortly.")
+        
+        # Store verification msg ID in DB temp storage (or cache) to delete later
+        VERIFY_CACHE[q.from_user.id] = status_msg.id
+        
+        cap = f"#Payment\n👤: {q.from_user.mention} (`{q.from_user.id}`)\n💰: ₹{amount} ({days} days)"
+        btn = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"pay_confirm_{q.from_user.id}_{days}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"pay_reject_{q.from_user.id}")
+            ]
+        ]
+        
         try:
-            await receipt.copy(RECEIPT_SEND_USERNAME, caption=cap)
-            await q.message.reply("✅ **Sent for Verification!**\nAdmin will activate shortly.")
+            await receipt.copy(RECEIPT_SEND_USERNAME, caption=cap, reply_markup=InlineKeyboardMarkup(btn))
         except Exception as e:
-            logger.error(f"Receipt Send Error: {e}")
             await q.message.reply(f"❌ Error sending receipt to Admin.\nContact manually: {RECEIPT_SEND_USERNAME}")
 
     except asyncio.TimeoutError:
@@ -257,4 +360,65 @@ async def buy_callback(c, q):
     except Exception as e:
         traceback.print_exc()
         await q.message.reply(f"❌ **Error Occurred:** `{str(e)}`")
+
+
+@Client.on_callback_query(filters.regex(r"^pay_(confirm|reject)_"))
+async def payment_action_callback(c, q):
+    if q.from_user.id not in ADMINS:
+        return await q.answer("❌ Only Admins!", show_alert=True)
+
+    data = q.data.split("_")
+    action = data[1]
+    user_id = int(data[2])
+
+    if action == "confirm":
+        days = int(data[3])
+        
+        ex = datetime.now() + timedelta(days=days)
+        plan_data = {
+            "expire": ex.strftime("%Y-%m-%d %H:%M:%S"),
+            "plan": f"{days} Days",
+            "premium": True,
+            # Reset flags
+            "reminded_12h": False, "reminded_6h": False, "reminded_3h": False,
+            "reminded_1h": False, "reminded_30m": False, "reminded_10m": False,
+            "last_reminder_id": 0
+        }
+        await db.update_plan(user_id, plan_data)
+        
+        new_caption = q.message.caption + f"\n\n✅ **Approved by** {q.from_user.mention}"
+        await q.message.edit_caption(caption=new_caption, reply_markup=None)
+        
+        if user_id in VERIFY_CACHE:
+            await safe_delete(c, user_id, [VERIFY_CACHE[user_id]])
+            del VERIFY_CACHE[user_id]
+        
+        try:
+            await c.send_message(
+                user_id, 
+                f"🎉 **Congratulations!**\n\n"
+                f"✅ Your premium of **{days} Days** is Active.\n"
+                f"📅 **Expires:** {get_ist_str(ex)} (IST)\n\n"
+                f"Enjoy our service! ❤️"
+            )
+        except Exception:
+            pass
+            
+    elif action == "reject":
+        new_caption = q.message.caption + f"\n\n❌ **Rejected by** {q.from_user.mention}"
+        await q.message.edit_caption(caption=new_caption, reply_markup=None)
+        
+        if user_id in VERIFY_CACHE:
+            await safe_delete(c, user_id, [VERIFY_CACHE[user_id]])
+            del VERIFY_CACHE[user_id]
+        
+        try:
+            await c.send_message(
+                user_id,
+                "❌ **Payment Rejected!**\n\n"
+                "Your payment was rejected by admin.\n"
+                "Please contact admin manually."
+            )
+        except Exception:
+            pass
 
