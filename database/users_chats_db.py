@@ -129,10 +129,6 @@ class Database:
 
     # ⚠️ NEW: WARN SYSTEM (For Management Plugin)
     async def get_warn(self, user_id, chat_id):
-        # We store warns inside the group document to save DB calls or separate collection
-        # Here using separate key in group settings is messy, better use a temp collection or simple query
-        # For simplicity and speed in auto-filter bots, I will use a simple query
-        # But wait, high traffic? Let's keep it simple.
         doc = await self.db.Warns.find_one({"user_id": user_id, "chat_id": chat_id})
         return doc if doc else {"count": 0}
 
@@ -229,6 +225,20 @@ class Database:
     async def get_data_db_size(self):
         stats = await self.db.command("dbstats")
         return stats["dataSize"]
+        
+    # ───────── STARTUP SUPPORT (ADDED MISSING FUNCTION) ─────────
+    async def get_banned(self):
+        """Returns list of banned users and disabled chats"""
+        banned_users = []
+        banned_chats = []
+        
+        async for u in self.users.find({"ban_status.is_banned": True}):
+            banned_users.append(u["id"])
+            
+        async for g in self.groups.find({"chat_status.is_disabled": True}):
+            banned_chats.append(g["id"])
+            
+        return banned_users, banned_chats
 
 # ─────────────────────────────────────────────
 # 🔚 INSTANCE
