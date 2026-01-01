@@ -1,21 +1,14 @@
 import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logging.getLogger('hydrogram').setLevel(logging.ERROR)
-
-# ✅ UptimeRobot और aiohttp के access logs को hide करें
-logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
-logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
-
-# ==========================================================
-# 🔥 UVLOOP (MUST be BEFORE any event loop creation)
-# ==========================================================
 import asyncio
+import os
+import time
+from typing import Union, Optional, AsyncGenerator
+from datetime import datetime
+import pytz
+
+# ==========================================================
+# 🔥 UVLOOP (High Performance Event Loop)
+# ==========================================================
 try:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -23,35 +16,35 @@ except ImportError:
     pass
 
 # ==========================================================
+# LOGGING SETUP
+# ==========================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logging.getLogger('hydrogram').setLevel(logging.ERROR)
+# ✅ Suppress noisy logs from aiohttp & uptime probes
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
+# ==========================================================
 # IMPORTS
 # ==========================================================
-import os
-import time
-from typing import Union, Optional, AsyncGenerator
 from aiohttp import web
 from hydrogram import Client, types
-from hydrogram.errors import FloodWait
 from web import web_app
 from info import (
-    API_ID,
-    API_HASH,
-    BOT_TOKEN,
-    PORT,
-    ADMINS,
-    LOG_CHANNEL,
-    INDEX_CHANNELS,
-    SUPPORT_GROUP,
-    BIN_CHANNEL,
-    DATABASE_URL,
-    DATABASE_NAME
+    API_ID, API_HASH, BOT_TOKEN, PORT, ADMINS, 
+    LOG_CHANNEL, DATABASE_URL, DATABASE_NAME
 )
-from utils import temp, get_readable_time
+from utils import temp
 from database.users_chats_db import db
-from pymongo import MongoClient
 
-# ✅ Indian time
-from datetime import datetime
-import pytz
+# ⚡ IMPORTANT: Import Database Indexer
+from Database.ia_filterdb import ensure_indexes
 
 # -------------------- IMPORT PREMIUM MODULE --------------------
 from plugins.premium import check_premium_expired
@@ -70,83 +63,93 @@ class Bot(Client):
         )
 
     async def start(self):
+        # 1. Start Client
         await super().start()
         temp.START_TIME = time.time()
 
-        # Load banned users & chats
-        b_users, b_chats = await db.get_banned()
-        temp.BANNED_USERS = b_users
-        temp.BANNED_CHATS = b_chats
+        # 2. Initialize Database Indexes (Background Task)
+        # यह सर्च को सुपर फास्ट बनाने के लिए जरूरी है
+        await ensure_indexes()
+        logger.info("✅ Database Indexes Checked/Created")
 
-        # Restart message handling
+        # 3. Load banned users & chats (Async)
+        try:
+            b_users, b_chats = await db.get_banned()
+            temp.BANNED_USERS = b_users
+            temp.BANNED_CHATS = b_chats
+        except Exception as e:
+            logger.error(f"Error loading banned list: {e}")
+
+        # 4. Restart Handler (If restart was triggered)
         if os.path.exists("restart.txt"):
-            with open("restart.txt") as f:
-                chat_id, msg_id = map(int, f.read().split())
             try:
+                with open("restart.txt") as f:
+                    chat_id, msg_id = map(int, f.read().split())
                 await self.edit_message_text(
                     chat_id=chat_id,
                     message_id=msg_id,
                     text="✅ Restarted Successfully!"
                 )
-            except Exception:
-                pass
-            os.remove("restart.txt")
+            except Exception as e:
+                logger.error(f"Restart message error: {e}")
+            finally:
+                os.remove("restart.txt")
 
-        # Bot identity
+        # 5. Set Bot Identity
         temp.BOT = self
         me = await self.get_me()
         temp.ME = me.id
         temp.U_NAME = me.username
         temp.B_NAME = me.first_name
 
-        # Web server (health / stream)
+        # 6. Start Web Server
         runner = web.AppRunner(web_app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", PORT).start()
+        logger.info(f"✅ Web Server Started on Port {PORT}")
 
-        # Premium expiry checker
+        # 7. Start Premium Checker Task
         asyncio.create_task(check_premium_expired(self))
 
-        # Indian Time
+        # 8. Send Startup Logs
         ist = pytz.timezone("Asia/Kolkata")
         now = datetime.now(ist)
         date_str = now.strftime("%d %B %Y")
         time_str = now.strftime("%I:%M:%S %p")
 
-        # Startup message
         startup_msg = (
             f"🤖 <b>Bot Started Successfully!</b>\n\n"
             f"📅 <b>Date:</b> {date_str}\n"
             f"🕐 <b>Time:</b> {time_str}\n"
-            f"🌏 <b>Timezone:</b> IST (Asia/Kolkata)\n\n"
-            f"✅ <b>Status:</b> Online & Running"
+            f"🌏 <b>Timezone:</b> IST (Asia/Kolkata)\n"
+            f"🚀 <b>Speed:</b> Optimized (Async/Motor)\n"
+            f"✅ <b>Status:</b> Online"
         )
 
-        # Notify admins
+        # Admin Notify
         for admin_id in ADMINS:
             try:
                 await self.send_message(admin_id, startup_msg)
-                logger.info(f"Startup notification sent to admin: {admin_id}")
+            except Exception:
+                pass # Ignore if admin blocked bot
+
+        # Log Channel Notify
+        if LOG_CHANNEL:
+            try:
+                await self.send_message(
+                    LOG_CHANNEL,
+                    f"<b>{me.mention} restarted successfully 🤖</b>"
+                )
             except Exception as e:
-                logger.error(f"Failed to send startup notification to {admin_id}: {e}")
+                logger.warning(f"Failed to send log to LOG_CHANNEL: {e}")
 
-        # Log channel
-        try:
-            await self.send_message(
-                LOG_CHANNEL,
-                f"<b>{me.mention} restarted successfully 🤖</b>"
-            )
-        except Exception:
-            logger.error("Bot is not admin in LOG_CHANNEL")
-            exit()
-
-        logger.info(f"@{me.username} started successfully")
+        logger.info(f"@{me.username} is Online & Ready!")
 
     async def stop(self, *args):
         await super().stop()
         logger.info("Bot stopped. Bye 👋")
 
-    # Custom iterator (index safe)
+    # Custom iterator (Keeping your logic)
     async def iter_messages(
         self: Client,
         chat_id: Union[int, str],
@@ -156,21 +159,27 @@ class Bot(Client):
         current = offset
         while current < limit:
             diff = min(200, limit - current)
-            messages = await self.get_messages(
-                chat_id,
-                list(range(current, current + diff))
-            )
-            for message in messages:
-                yield message
-                current += 1
+            try:
+                messages = await self.get_messages(
+                    chat_id,
+                    list(range(current, current + diff))
+                )
+                for message in messages:
+                    yield message
+                current += diff
+            except Exception as e:
+                logger.error(f"Error fetching messages: {e}")
+                return
 
 # ==========================================================
-# SAFE START
+# MAIN EXECUTION
 # ==========================================================
 async def main():
     bot = Bot()
     await bot.start()
+    # Idle wait
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
