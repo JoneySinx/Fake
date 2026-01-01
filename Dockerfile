@@ -1,9 +1,36 @@
-FROM python:3.11
+FROM python:3.11-slim
 
-WORKDIR /Auto-Filter-Bot
+# =========================
+# Environment Optimizations
+# =========================
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-COPY . /Auto-Filter-Bot
+WORKDIR /app
 
-RUN pip install -r requirements.txt
+# =========================
+# System Dependencies
+# =========================
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-CMD ["python", "bot.py"]
+# =========================
+# Python Dependencies
+# =========================
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
+
+# =========================
+# Bot Source Code
+# =========================
+COPY . .
+
+# =========================
+# Run Bot (uvloop auto-used)
+# =========================
+CMD ["python", "-O", "bot.py"]
