@@ -44,7 +44,7 @@ from utils import temp
 from database.users_chats_db import db
 
 # ⚡ IMPORTANT: Import Database Indexer
-from Database.ia_filterdb import ensure_indexes
+from database.ia_filterdb import ensure_indexes
 
 # -------------------- IMPORT PREMIUM MODULE --------------------
 from plugins.premium import check_premium_expired
