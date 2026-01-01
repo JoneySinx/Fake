@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+*.log
+.env
+.env.*
+venv
+.env.local
+Dockerfile
+README.md
