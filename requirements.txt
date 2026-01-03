@@ -11,6 +11,6 @@ Pillow
 pytz
 pyromod
 pymongo
-google-generativeai
+google-genai
 
 
