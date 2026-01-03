@@ -108,9 +108,9 @@ QUALITY = environ.get(
     "QUALITY", "360p 480p 720p 1080p"
 ).lower().split()
 
-INDEX_EXTENSIONS = environ.get(
-    "INDEX_EXTENSIONS", "mp4 mkv"
-).lower().split()
+# info.py के अंदर कहीं भी पेस्ट करें
+GEMINI_API_KEY = environ.get("GEMINI_API_KEY", "Yaha_Apni_API_Key_Dalein")
+
 
 PM_FILE_DELETE_TIME = int(environ.get("PM_FILE_DELETE_TIME", 3600))
 
