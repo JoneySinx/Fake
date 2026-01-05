@@ -1,4 +1,6 @@
 import asyncio
+import io  # फोटो के लिए जोड़ा गया
+from PIL import Image  # फोटो के लिए जोड़ा गया
 from google import genai
 from hydrogram import Client, filters, enums
 from info import GEMINI_API_KEY
@@ -26,15 +28,43 @@ async def ask_ai(client, message):
             "⚡ **Gemini 3 Flash**\n\n"
             "Usage:\n"
             "• `/ask Who is Batman?`\n"
-            "• Reply to text with `/ask`"
+            "• Reply to text/photo with `/ask`"
         )
 
+    # --- INPUT PROCESSING ---
+    question = ""
+    image_input = None
+    
+    # 1. टेक्स्ट चेक करना (कमांड के साथ या रिप्लाई में)
     if len(message.command) > 1:
         question = message.text.split(None, 1)[1]
-    elif message.reply_to_message and message.reply_to_message.text:
-        question = message.reply_to_message.text
-    else:
-        return await message.reply("❌ कृपया सवाल पूछें।")
+    elif message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
+        question = message.reply_to_message.text or message.reply_to_message.caption
+
+    # 2. फोटो चेक करना (नया फीचर)
+    if message.reply_to_message and message.reply_to_message.photo:
+        status_msg = await message.reply("⬇️ Downloading Image...")
+        try:
+            # फोटो को मेमोरी में डाउनलोड करें
+            photo_stream = await client.download_media(message.reply_to_message, in_memory=True)
+            image_input = Image.open(io.BytesIO(photo_stream.getbuffer()))
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.delete()
+            return await message.reply(f"❌ Image Error: {e}")
+
+    # अगर न तो टेक्स्ट है और न ही फोटो
+    if not question and not image_input:
+        return await message.reply("❌ कृपया सवाल पूछें या फोटो पर रिप्लाई करें।")
+    
+    # अगर सिर्फ फोटो है और सवाल नहीं लिखा, तो डिफ़ॉल्ट सवाल सेट करें
+    if image_input and not question:
+        question = "Describe this image."
+
+    # Gemini को भेजने के लिए कंटेंट तैयार करें
+    contents_body = [question]
+    if image_input:
+        contents_body.append(image_input)
 
     status = await message.reply("⚡ Thinking (Flash Mode)...")
     await client.send_chat_action(message.chat.id, enums.ChatAction.TYPING)
@@ -42,12 +72,12 @@ async def ask_ai(client, message):
     try:
         loop = asyncio.get_event_loop()
         
-        # 🔥 USING LATEST GEMINI 3 FLASH MODEL
+        # 🔥 USING YOUR ORIGINAL MODEL (Gemini 3 Flash)
         response = await loop.run_in_executor(
             None, 
             lambda: ai_client.models.generate_content(
-                model='gemini-3-flash-preview', 
-                contents=question
+                model='gemini-3-flash-preview', # कोई बदलाव नहीं किया गया
+                contents=contents_body
             )
         )
         
