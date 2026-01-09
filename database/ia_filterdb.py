@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────
 client = motor.motor_asyncio.AsyncIOMotorClient(
     DATABASE_URL,
-    maxPoolSize=50,       # Koyeb के लिए बेस्ट
+    maxPoolSize=50,
     minPoolSize=10,
     serverSelectionTimeoutMS=5000
 )
@@ -37,11 +37,10 @@ async def ensure_indexes():
     """Create text indexes for fast search"""
     for name, col in COLLECTIONS.items():
         try:
-            # TEXT index search के लिए जरूरी है
             await col.create_index(
                 [("file_name", "text"), ("caption", "text")],
                 name=f"{name}_text",
-                background=True  # बोट को रोके बिना इंडेक्स बनाएगा
+                background=True
             )
         except Exception as e:
             logger.error(f"Index creation failed for {name}: {e}")
@@ -84,28 +83,31 @@ async def db_count_documents():
         return {"primary": 0, "cloud": 0, "archive": 0, "total": 0}
 
 # ─────────────────────────────────────────
-# 💾 SAVE FILE (ASYNC)
+# 💾 SAVE FILE (SAFE OLD LOGIC + ASYNC)
 # ─────────────────────────────────────────
 async def save_file(media, collection_type="primary"):
     try:
+        # ✅ Old Logic ID Generation (Reliable)
         file_id = unpack_new_file_id(media.file_id)
         
         # क्लीन नाम और कैप्शन
-        f_name = re.sub(r"@\w+", "", media.file_name or "").strip()
-        caption = re.sub(r"@\w+", "", media.caption or "").strip()
+        f_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", media.file_name or "").strip()
+        caption = re.sub(r"@\w+|(_|\-|\.|\+)", " ", media.caption or "").strip()
 
         doc = {
-            "_id": file_id,
+            "_id": file_id,             # यह ID सर्च और भेजने दोनों के काम आएगा
             "file_name": f_name,
             "caption": caption,
             "file_size": media.file_size
         }
 
         col = COLLECTIONS.get(collection_type, primary)
-        await col.insert_one(doc)
+        
+        # ✅ UPDATE: insert_one की जगह replace_one यूज करें
+        # upsert=True का मतलब: अगर फाइल पहले से है तो अपडेट करे, नहीं तो नई बनाए।
+        # इससे "DuplicateKeyError" नहीं आएगा और इंडेक्सिंग नहीं रुकेगी।
+        await col.replace_one({"_id": file_id}, doc, upsert=True)
         return "suc"
-    except DuplicateKeyError:
-        return "dup"
     except Exception as e:
         logger.error(f"Error saving file: {e}")
         return "err"
@@ -118,7 +120,6 @@ def _text_filter(q):
 
 async def _search(col, q, offset, limit):
     try:
-        # Motor cursor usage
         cursor = col.find(
             _text_filter(q),
             {
@@ -132,6 +133,13 @@ async def _search(col, q, offset, limit):
         cursor.skip(offset).limit(limit)
         
         docs = await cursor.to_list(length=limit)
+        
+        # ✅ CRITICAL FIX:
+        # बोट प्लगइन को 'file_id' चाहिए होता है, लेकिन मोंगो '_id' देता है।
+        # हम यहाँ मैन्युअली '_id' को 'file_id' में कॉपी कर रहे हैं।
+        for doc in docs:
+            doc['file_id'] = doc['_id']
+
         count = await col.count_documents(_text_filter(q))
         return docs, count
     except Exception as e:
@@ -255,15 +263,18 @@ async def get_file_details(file_id):
     try:
         for col in COLLECTIONS.values():
             doc = await col.find_one({"_id": file_id})
-            if doc: return doc
+            if doc:
+                doc['file_id'] = doc['_id'] # Compatibility fix
+                return doc
         return None
     except Exception:
         return None
 
-# --- File ID Encoding Utils (CPU bound, keep sync) ---
+# --- File ID Encoding Utils (EXACTLY AS PER OLD BOT) ---
 def encode_file_id(s: bytes) -> str:
     r, n = b"", 0
-    for i in s + bytes([22, 4]):
+    # Old Bot Padding Logic (Exactly replicated)
+    for i in s + bytes([22]) + bytes([4]):
         if i == 0: n += 1
         else:
             if n: r += b"\x00" + bytes([n]); n = 0
@@ -271,9 +282,13 @@ def encode_file_id(s: bytes) -> str:
     return base64.urlsafe_b64encode(r).decode().rstrip("=")
 
 def unpack_new_file_id(new_file_id):
+    """
+    Decodes the File ID and repacks it WITH access_hash.
+    This ensures the file works even if you leave the channel.
+    """
     try:
         d = FileId.decode(new_file_id)
+        # We pack <iiqq to include the access_hash (Critical for reliability)
         return encode_file_id(pack("<iiqq", int(d.file_type), d.dc_id, d.media_id, d.access_hash))
     except:
         return None
-
