@@ -7,6 +7,7 @@ from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from Script import script
+# ✅ Updated Import
 from database.ia_filterdb import db_count_documents, get_file_details, delete_files
 from database.users_chats_db import db
 
@@ -40,7 +41,6 @@ async def start(client, message):
     
     # 1. GROUP HANDLING
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        # Async DB Call
         if not await db.get_chat(message.chat.id):
             total = await client.get_chat_members_count(message.chat.id)
             user = message.chat.username or "Private"
@@ -93,7 +93,10 @@ async def start(client, message):
                 except: pass
                 
                 grp_id = int(parts[1])
-                file_id = parts[2]
+                
+                # ✅ CRITICAL FIX: अगर File ID में "_" हुआ तो यह उसे तोड़ देगा।
+                # join का उपयोग करके उसे वापस जोड़ना जरूरी है।
+                file_id = "_".join(parts[2:])
                 
                 # Async DB Calls
                 file = await get_file_details(file_id)
@@ -113,9 +116,14 @@ async def start(client, message):
                 if IS_STREAM:
                     btn.insert(0, [InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")])
 
+                # ✅ SAFETY FIX: 
+                # हम Database से 'file_ref' (Original ID) लेंगे।
+                # अगर वो नहीं मिला, तो URL वाले ID का इस्तेमाल करेंगे।
+                real_file_id = file.get('file_ref', file_id)
+
                 msg = await client.send_cached_media(
                     chat_id=message.chat.id,
-                    file_id=file_id,
+                    file_id=real_file_id, # ✅ Using safe ID
                     caption=caption,
                     reply_markup=InlineKeyboardMarkup(btn)
                 )
@@ -125,12 +133,10 @@ async def start(client, message):
                     del_msg = await msg.reply(
                         f"⚠️ This message will delete in {get_readable_time(PM_FILE_DELETE_TIME)}."
                     )
-                    # Non-blocking delete task
                     asyncio.create_task(
                         auto_delete_messages([msg.id, del_msg.id], message.chat.id, client, PM_FILE_DELETE_TIME)
                     )
                     
-                    # Store for close button logic
                     if not hasattr(temp, 'PM_FILES'): temp.PM_FILES = {}
                     temp.PM_FILES[msg.id] = {'file_msg': msg.id, 'note_msg': del_msg.id}
                 return
@@ -150,18 +156,17 @@ async def start(client, message):
     )
 
 # ─────────────────────────
-# /stats COMMAND (Optimized)
+# /stats COMMAND
 # ─────────────────────────
 @Client.on_message(filters.command("stats") & filters.user(ADMINS))
 async def stats(_, message):
     msg = await message.reply("🔄 Fetching Stats...")
     
-    # All Async Calls
     files = await db_count_documents()
     users = await db.total_users_count()
     chats = await db.total_chat_count()
     
-    # Direct Motor Count (Super Fast)
+    # Accessing collection directly from DB instance
     premium = await db.premium.count_documents({"status.premium": True})
 
     text = f"""
@@ -195,7 +200,7 @@ async def delete_file_cmd(client, message):
         return await message.reply("❌ Invalid Storage! Use: primary, cloud, archive")
     
     msg = await message.reply("🗑 Deleting...")
-    count = await delete_files(query, storage) # Async Call
+    count = await delete_files(query, storage)
     
     if count: await msg.edit(f"✅ Deleted `{count}` files from `{storage}`.")
     else: await msg.edit("❌ No files found.")
@@ -227,7 +232,7 @@ async def confirm_del(client, query):
     storage = query.data.split("#")[1]
     await query.message.edit("🗑 Processing... This may take time.")
     
-    count = await delete_files("*", storage) # Async
+    count = await delete_files("*", storage)
     await query.message.edit(f"✅ Deleted `{count}` files from `{storage}`.")
 
 # ─────────────────────────
@@ -237,12 +242,11 @@ async def confirm_del(client, query):
 async def myplan_cb(client, query):
     if not IS_PREMIUM: return await query.answer("Premium disabled.", show_alert=True)
     
-    mp = await db.get_plan(query.from_user.id) # Async
+    mp = await db.get_plan(query.from_user.id)
     if not mp.get('premium'):
         btn = [[InlineKeyboardButton('💎 Buy Premium', callback_data='activate_plan')]]
         return await query.message.edit("❌ No active plan.", reply_markup=InlineKeyboardMarkup(btn))
     
-    # Fast Date Parsing
     expire = mp.get('expire')
     if isinstance(expire, str):
         try: expire = datetime.strptime(expire, "%Y-%m-%d %H:%M:%S")
@@ -266,21 +270,25 @@ async def stream_cb(client, query):
     file_id = query.data.split("#")[1]
     await query.answer("🔗 Generating Links...")
     
-    msg = await client.send_cached_media(BIN_CHANNEL, file_id)
-    watch = f"{URL}watch/{msg.id}"
-    dl = f"{URL}download/{msg.id}"
-    
-    btn = [
-        [InlineKeyboardButton("▶️ Watch", url=watch), InlineKeyboardButton("⬇️ Download", url=dl)],
-        [InlineKeyboardButton("❌ Close", callback_data="close_data")]
-    ]
-    await query.message.edit_reply_markup(InlineKeyboardMarkup(btn))
+    # यहाँ हम file_id का उपयोग करके Bin Channel में भेज रहे हैं
+    # यह ठीक है क्योंकि Bin Channel में भेजना एक नया Message Create करता है
+    try:
+        msg = await client.send_cached_media(BIN_CHANNEL, file_id)
+        watch = f"{URL}watch/{msg.id}"
+        dl = f"{URL}download/{msg.id}"
+        
+        btn = [
+            [InlineKeyboardButton("▶️ Watch", url=watch), InlineKeyboardButton("⬇️ Download", url=dl)],
+            [InlineKeyboardButton("❌ Close", callback_data="close_data")]
+        ]
+        await query.message.edit_reply_markup(InlineKeyboardMarkup(btn))
+    except Exception as e:
+        await query.answer(f"Error: {e}", show_alert=True)
 
 @Client.on_callback_query(filters.regex("^close_data$"))
 async def close_cb(c, q):
     try:
         await q.message.delete()
-        # Handle linked note deletion
         if hasattr(temp, 'PM_FILES') and q.message.id in temp.PM_FILES:
             try:
                 note_id = temp.PM_FILES[q.message.id]['note_msg']
@@ -288,4 +296,3 @@ async def close_cb(c, q):
                 del temp.PM_FILES[q.message.id]
             except: pass
     except: pass
-
