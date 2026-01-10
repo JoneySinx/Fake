@@ -1,3 +1,4 @@
+import logging
 import motor.motor_asyncio
 from info import (
     BOT_ID,
@@ -11,8 +12,10 @@ from info import (
     AUTO_DELETE
 )
 
+logger = logging.getLogger(__name__)
+
 # ─────────────────────────────────────────────
-# 🔌 ASYNC DATABASE CONNECTION (High Speed)
+# 🔌 ASYNC DATABASE CONNECTION (Optimized)
 # ─────────────────────────────────────────────
 class Database:
     
@@ -21,8 +24,9 @@ class Database:
         self.client = motor.motor_asyncio.AsyncIOMotorClient(
             DATABASE_URL,
             minPoolSize=10,
-            maxPoolSize=50,       # Koyeb के लिए बेस्ट
-            maxIdleTimeMS=45000
+            maxPoolSize=50,       # Koyeb/VPS के लिए बेस्ट
+            maxIdleTimeMS=45000,
+            serverSelectionTimeoutMS=5000 # Timeout अगर DB कनेक्ट न हो
         )
         self.db = self.client[DATABASE_NAME]
         
@@ -31,6 +35,7 @@ class Database:
         self.premium = self.db.Premiums
         self.connections = self.db.Connections
         self.settings = self.db.Settings
+        self.warns = self.db.Warns  # ✅ Added definition here
 
     # Default settings
     default_setgs = {
@@ -41,9 +46,9 @@ class Database:
         "welcome_text": WELCOME_TEXT,
         "caption": FILE_CAPTION,
         "search_enabled": True,
-        "blacklist": [],      # Added for Management
-        "dlink": {},          # Added for Management
-        "notes": {}           # Added for Notes
+        "blacklist": [],
+        "dlink": {},
+        "notes": {}
     }
 
     default_prm = {
@@ -51,11 +56,24 @@ class Database:
         "reminded_24h": False, "reminded_6h": False, "reminded_1h": False
     }
 
-    # ───────── USERS ─────────
+    # ───────────────── USERS ─────────────────
     
     async def add_user(self, user_id, name):
-        user = {"id": int(user_id), "name": name, "ban_status": {"is_banned": False, "ban_reason": ""}}
-        await self.users.insert_one(user)
+        # ✅ सुधार: insert_one की जगह update_one (Upsert)
+        # इससे डुप्लीकेट डाटा नहीं बनेगा और नाम अपडेट होता रहेगा
+        try:
+            await self.users.update_one(
+                {"id": int(user_id)},
+                {"$set": {"name": name}},
+                upsert=True
+            )
+            # सुनिश्चित करें कि ban_status सेट है (सिर्फ नए यूजर के लिए)
+            await self.users.update_one(
+                {"id": int(user_id), "ban_status": {"$exists": False}},
+                {"$set": {"ban_status": {"is_banned": False, "ban_reason": ""}}}
+            )
+        except Exception as e:
+            logger.error(f"Error adding user: {e}")
 
     async def is_user_exist(self, user_id):
         user = await self.users.find_one({"id": int(user_id)})
@@ -73,7 +91,8 @@ class Database:
     async def ban_user(self, user_id, reason="No Reason"):
         await self.users.update_one(
             {"id": int(user_id)},
-            {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}}
+            {"$set": {"ban_status": {"is_banned": True, "ban_reason": reason}}},
+            upsert=True # अगर यूजर DB में नहीं है तो भी बैन हो जाए
         )
 
     async def unban_user(self, user_id):
@@ -86,16 +105,23 @@ class Database:
         user = await self.users.find_one({"id": int(user_id)})
         return user.get("ban_status", {"is_banned": False, "ban_reason": ""}) if user else {"is_banned": False, "ban_reason": ""}
 
-    # ───────── GROUPS ─────────
+    # ───────────────── GROUPS ─────────────────
 
     async def add_chat(self, group_id, title):
-        chat = {
-            "id": int(group_id),
-            "title": title,
-            "chat_status": {"is_disabled": False, "reason": ""},
-            "settings": self.default_setgs
-        }
-        await self.groups.insert_one(chat)
+        # ✅ सुधार: Upsert का उपयोग (डुप्लीकेट रोकने के लिए)
+        try:
+            await self.groups.update_one(
+                {"id": int(group_id)},
+                {"$set": {"title": title}},
+                upsert=True
+            )
+            # डिफ़ॉल्ट सेटिंग्स तभी सेट करें जब वे मौजूद न हों
+            await self.groups.update_one(
+                {"id": int(group_id), "settings": {"$exists": False}},
+                {"$set": {"settings": self.default_setgs, "chat_status": {"is_disabled": False, "reason": ""}}}
+            )
+        except Exception as e:
+            logger.error(f"Error adding chat: {e}")
 
     async def get_chat(self, group_id):
         grp = await self.groups.find_one({"id": int(group_id)})
@@ -107,7 +133,7 @@ class Database:
     async def get_all_chats(self):
         return self.groups.find({})
 
-    # ───────── SETTINGS & MANAGEMENT (UPDATED) ─────────
+    # ───────────────── SETTINGS & MANAGEMENT ─────────────────
     
     async def update_settings(self, group_id, settings):
         await self.groups.update_one(
@@ -120,29 +146,29 @@ class Database:
         grp = await self.groups.find_one({"id": int(group_id)})
         if grp:
             settings = grp.get("settings", self.default_setgs)
-            # Ensure new keys exist without overwriting
+            # Missing keys को Default values से भरें
             settings.setdefault("search_enabled", True)
             settings.setdefault("blacklist", [])
             settings.setdefault("dlink", {})
             return settings
         return self.default_setgs
 
-    # ⚠️ NEW: WARN SYSTEM (For Management Plugin)
+    # ⚠️ WARN SYSTEM (Fixed Connection)
     async def get_warn(self, user_id, chat_id):
-        doc = await self.db.Warns.find_one({"user_id": user_id, "chat_id": chat_id})
+        doc = await self.warns.find_one({"user_id": user_id, "chat_id": chat_id})
         return doc if doc else {"count": 0}
 
     async def set_warn(self, user_id, chat_id, data):
-        await self.db.Warns.update_one(
+        await self.warns.update_one(
             {"user_id": user_id, "chat_id": chat_id},
             {"$set": data},
             upsert=True
         )
 
     async def clear_warn(self, user_id, chat_id):
-        await self.db.Warns.delete_one({"user_id": user_id, "chat_id": chat_id})
+        await self.warns.delete_one({"user_id": user_id, "chat_id": chat_id})
 
-    # ⚠️ NEW: NOTES SYSTEM (For Notes Plugin)
+    # ⚠️ NOTES SYSTEM
     async def get_all_notes(self, chat_id):
         grp = await self.groups.find_one({"id": int(chat_id)})
         if grp and "settings" in grp:
@@ -162,7 +188,7 @@ class Database:
             {"$unset": {f"settings.notes.{name}": ""}}
         )
 
-    # ───────── PREMIUM ─────────
+    # ───────────────── PREMIUM ─────────────────
     
     async def get_plan(self, user_id):
         st = await self.premium.find_one({"id": int(user_id)})
@@ -185,13 +211,16 @@ class Database:
         return self.premium.find({})
 
     async def reset_reminder_flags(self, user_id):
-        mp = await self.get_plan(user_id)
-        mp["reminded_24h"] = False
-        mp["reminded_6h"] = False
-        mp["reminded_1h"] = False
-        await self.update_plan(user_id, mp)
+        await self.premium.update_one(
+            {"id": int(user_id)},
+            {"$set": {
+                "status.reminded_24h": False,
+                "status.reminded_6h": False,
+                "status.reminded_1h": False
+            }}
+        )
 
-    # ───────── CONNECTIONS ─────────
+    # ───────────────── CONNECTIONS ─────────────────
     
     async def add_connect(self, group_id, user_id):
         await self.connections.update_one(
@@ -210,7 +239,7 @@ class Database:
             {"$pull": {"group_ids": group_id}}
         )
 
-    # ───────── BOT & STATS ─────────
+    # ───────────────── BOT & STATS ─────────────────
     
     async def update_bot_sttgs(self, var, val):
         await self.settings.update_one(
@@ -226,7 +255,6 @@ class Database:
         stats = await self.db.command("dbstats")
         return stats["dataSize"]
         
-    # ───────── STARTUP SUPPORT (ADDED MISSING FUNCTION) ─────────
     async def get_banned(self):
         """Returns list of banned users and disabled chats"""
         banned_users = []
@@ -244,4 +272,3 @@ class Database:
 # 🔚 INSTANCE
 # ─────────────────────────────────────────────
 db = Database()
-
