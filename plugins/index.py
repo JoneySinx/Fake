@@ -4,6 +4,7 @@ import asyncio
 from hydrogram import Client, filters, enums
 from hydrogram.errors import FloodWait
 from info import ADMINS
+# ✅ Updated Import
 from database.ia_filterdb import save_file
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
@@ -192,7 +193,8 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip, collection_type="p
                 
                 current += 1
                 
-                if current % 30 == 0:
+                # Update progress every 50 messages (Less spam)
+                if current % 50 == 0:
                     btn = [[
                         InlineKeyboardButton('CANCEL', callback_data=f'index#cancel#{chat}#{lst_msg_id}#{skip}')
                     ]]
@@ -231,14 +233,18 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip, collection_type="p
                     unsupported += 1
                     continue
                 
-                # Check file size - skip files under 2 MB (2097152 bytes)
+                # Check file size - skip files under 2 MB
                 file_size = getattr(media, 'file_size', 0)
                 if file_size < 2097152:  # 2 MB in bytes
                     badfiles += 1
                     continue
                 
                 media.caption = message.caption
-                file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
+                # ✅ Safe Name Cleaning (No Error)
+                try:
+                    media.file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
+                except:
+                    pass
                 
                 # Save to selected collection
                 sts = await save_file(media, collection_type=collection_type)
@@ -266,4 +272,3 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip, collection_type="p
                 f'❗ Errors: <code>{errors}</code>\n'
                 f'🚫 Bad Files: <code>{badfiles}</code>'
             )
-
