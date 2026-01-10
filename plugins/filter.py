@@ -5,31 +5,27 @@ import random
 from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from info import (
-    ADMINS, DELETE_TIME, MAX_BTN, IS_PREMIUM, PICS
-)
-from utils import (
-    is_premium, get_size, is_check_admin,
-    temp, get_settings, save_group_settings
-)
-# Note: Ensure these imports exist in your project structure
-from database.ia_filterdb import get_search_results
+# ✅ Updated Imports (Ensure these exist)
+from info import ADMINS, DELETE_TIME, MAX_BTN, IS_PREMIUM, PICS
+from utils import is_premium, get_size, is_check_admin, temp, get_settings, save_group_settings
+from database.ia_filterdb import get_search_results # डेटाबेस फाइल से सर्च फंक्शन
 
 # ─────────────────────────────────────────────
-# ⚡ GLOBAL CACHE (With Auto-Cleaner)
+# ⚡ GLOBAL CACHE (Auto-Cleaner)
 # ─────────────────────────────────────────────
 BUTTONS = {}
-# Koyeb RAM को बचाने के लिए Cache Limit
+
 def check_cache_limit():
-    if len(BUTTONS) > 1000:
+    """Koyeb RAM Saver: Clears cache if it gets too big"""
+    if len(BUTTONS) > 500:  # 1000 थोड़ा ज्यादा हो सकता है, 500 सेफ है
         BUTTONS.clear()
         temp.FILES.clear()
 
 # ─────────────────────────────────────────────
-# 🛠️ HELPER: VALIDATOR (FAST)
+# 🛠️ VALIDATOR
 # ─────────────────────────────────────────────
 async def is_valid_search(message):
-    """Common checks for both PM and Group to avoid duplicate code"""
+    """Checks if message is a valid search query"""
     if not message.text or message.text.startswith("/"):
         return False
     
@@ -43,7 +39,7 @@ async def is_valid_search(message):
             if entity.type in [enums.MessageEntityType.URL, enums.MessageEntityType.TEXT_LINK]:
                 return False
                 
-    # Ignore Symbols/Emoji only
+    # Ignore Symbols only
     if not any(c.isalnum() for c in message.text):
         return False
         
@@ -57,7 +53,6 @@ async def pm_search(client, message):
     if not await is_valid_search(message):
         return
 
-    # Premium Check
     if IS_PREMIUM and not await is_premium(message.from_user.id, client):
         return await message.reply_photo(
             random.choice(PICS),
@@ -81,7 +76,7 @@ async def group_search(client, message):
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # 1. Check Settings (Cached in DB/RAM)
+    # 1. Settings Check
     settings = await get_settings(chat_id)
     if not settings.get("search_enabled", True):
         return
@@ -90,34 +85,37 @@ async def group_search(client, message):
     if IS_PREMIUM and not await is_premium(user_id, client):
         return
 
-    # 3. Admin Tagging (Optimized)
     text_lower = message.text.lower()
+
+    # 3. Admin Report Logic (Safe)
     if "@admin" in text_lower:
-        # Avoid tagging if user is admin
         if await is_check_admin(client, chat_id, user_id):
             return
         
-        # Fast Admin Fetching (Only admins, not all members)
         mentions = []
         async for m in client.get_chat_administrators(chat_id):
             if not m.user.is_bot:
                 mentions.append(f"<a href='tg://user?id={m.user.id}'>\u2063</a>")
         
-        admins_text = "".join(mentions)
-        await message.reply(f"✅ Report sent to admins!{admins_text}")
+        await message.reply(f"✅ Report sent to admins!{''.join(mentions)}")
         return
 
-    # 4. Link Blocking (Fast Regex)
+    # 4. Link Blocking
     if "http" in text_lower or "t.me/" in text_lower:
         if re.search(r"(?:http|www\.|t\.me/)", text_lower):
             if not await is_check_admin(client, chat_id, user_id):
-                await message.delete()
-                return await message.reply("❌ Links not allowed!", quote=True)
+                try: await message.delete()
+                except: pass
+                msg = await message.reply("❌ Links not allowed!", quote=True)
+                await asyncio.sleep(5)
+                try: await msg.delete()
+                except: pass
+                return
 
     await auto_filter(client, message, collection_type="all")
 
 # ─────────────────────────────────────────────
-# ⚙️ ADMIN TOGGLE COMMAND
+# ⚙️ ADMIN TOGGLE
 # ─────────────────────────────────────────────
 @Client.on_message(filters.command("search") & filters.group)
 async def search_toggle(client, message):
@@ -134,43 +132,46 @@ async def search_toggle(client, message):
     await message.reply(f"✅ Search is now **{'ENABLED' if state else 'DISABLED'}**")
 
 # ─────────────────────────────────────────────
-# 🚀 AUTO FILTER CORE (OPTIMIZED)
+# 🚀 AUTO FILTER CORE
 # ─────────────────────────────────────────────
 async def auto_filter(client, msg, collection_type="all"):
-    check_cache_limit() # Free up RAM if needed
+    check_cache_limit() 
 
     search = msg.text.strip()
     
-    # ⚡ DB Call (Async Motor)
+    # ⚡ DB Call
     files, next_offset, total, actual_source = await get_search_results(
         search, max_results=MAX_BTN, offset=0, collection_type=collection_type
     )
 
     if not files:
-        # Non-blocking delete for "not found" message
-        task = asyncio.create_task(msg.reply(f"❌ No results for <b>{search}</b>"))
-        await asyncio.sleep(5)
-        try: await (await task).delete()
-        except: pass
+        try:
+            # Send and auto-delete "Not Found"
+            m = await msg.reply(f"❌ No results for <b>{search}</b>", quote=True)
+            await asyncio.sleep(5)
+            await m.delete()
+        except:
+            pass
         return
 
     key = f"{msg.chat.id}-{msg.id}"
     temp.FILES[key] = files
     BUTTONS[key] = search
 
-    # ⚡ Fast String Building (Join is faster than +=)
+    # ⚡ Link Generation
     list_items = []
     for file in files:
+        # यहाँ हम _id (Unique ID with access_hash) का उपयोग कर रहे हैं जो सुरक्षित है
         f_link = f"https://t.me/{temp.U_NAME}?start=file_{msg.chat.id}_{file['_id']}"
+        
+        # फाइल का नाम और साइज
         list_items.append(
             f"📁 <a href='{f_link}'>[{get_size(file['file_size'])}] {file['file_name']}</a>"
         )
+    
     files_text = "\n\n".join(list_items)
-
-    # Pages Calculation
     total_pages = math.ceil(total / MAX_BTN)
     
-    # UI Text
     cap = (
         f"<b>👑 Search: {search}\n"
         f"🎬 Total: {total}\n"
@@ -179,35 +180,34 @@ async def auto_filter(client, msg, collection_type="all"):
         f"{files_text}"
     )
 
-    # ⚡ Button Logic (Clean)
+    # Buttons
     btn = []
-    
-    # Row 1: Navigation
     nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
     if next_offset:
+        # Note: 'pri' is short for primary to save callback bytes
         nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{msg.from_user.id}_{key}_{next_offset}_{actual_source}"))
     btn.append(nav)
 
-    # Row 2: Collections
+    # Collection Buttons
     col_btn = []
     for c in ["primary", "cloud", "archive"]:
         tick = "✅" if c == actual_source else "📂"
         col_btn.append(InlineKeyboardButton(f"{tick} {c.title()}", callback_data=f"coll_{msg.from_user.id}_{key}_{c}"))
     btn.append(col_btn)
 
-    # Row 3: Close
     btn.append([InlineKeyboardButton("❌ Close", callback_data="close_data")])
 
-    # Send Result
-    m = await msg.reply(cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True)
-
-    # ⚡ Non-Blocking Auto Delete
-    settings = await get_settings(msg.chat.id)
-    if settings.get("auto_delete"):
-        asyncio.create_task(auto_delete_msg(m, msg))
+    try:
+        m = await msg.reply(cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, quote=True)
+        
+        # Auto Delete Logic
+        settings = await get_settings(msg.chat.id)
+        if settings.get("auto_delete"):
+            asyncio.create_task(auto_delete_msg(m, msg))
+    except Exception as e:
+        print(f"Error sending filter: {e}")
 
 async def auto_delete_msg(bot_msg, user_msg):
-    """Separate task to handle deletions without freezing bot"""
     await asyncio.sleep(DELETE_TIME)
     try: await bot_msg.delete()
     except: pass
@@ -215,7 +215,7 @@ async def auto_delete_msg(bot_msg, user_msg):
     except: pass
 
 # ─────────────────────────────────────────────
-# 🔁 NAVIGATION HANDLER (OPTIMIZED)
+# 🔁 NAVIGATION HANDLER
 # ─────────────────────────────────────────────
 @Client.on_callback_query(filters.regex(r"^nav_"))
 async def nav_handler(client, query):
@@ -233,7 +233,6 @@ async def nav_handler(client, query):
     if not search:
         return await query.answer("❌ Search Expired! Search again.", show_alert=True)
 
-    # ⚡ DB Call
     files, next_off, total, act_src = await get_search_results(
         search, max_results=MAX_BTN, offset=int(offset), collection_type=coll_type
     )
@@ -241,18 +240,15 @@ async def nav_handler(client, query):
 
     temp.FILES[key] = files
 
-    # Build Text
     list_items = []
     for file in files:
         f_link = f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}"
         list_items.append(f"📁 <a href='{f_link}'>[{get_size(file['file_size'])}] {file['file_name']}</a>")
     
+    files_text = "\n\n".join(list_items)
     total_pages = math.ceil(total / MAX_BTN)
     curr_page = (int(offset) // MAX_BTN) + 1
     
-    # 🔥 FIXED HERE: Using variable instead of joining inside f-string
-    files_text = "\n\n".join(list_items)
-
     cap = (
         f"<b>👑 Search: {search}\n"
         f"🎬 Total: {total}\n"
@@ -261,14 +257,15 @@ async def nav_handler(client, query):
         f"{files_text}"
     )
 
-    # Build Buttons
     btn = []
     nav = []
     prev_off = int(offset) - MAX_BTN
     
     if prev_off >= 0:
         nav.append(InlineKeyboardButton("« Prev", callback_data=f"nav_{req}_{key}_{prev_off}_{act_src}"))
+    
     nav.append(InlineKeyboardButton(f"📄 {curr_page}/{total_pages}", callback_data="pages"))
+    
     if next_off:
         nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{req}_{key}_{next_off}_{act_src}"))
     btn.append(nav)
@@ -278,6 +275,7 @@ async def nav_handler(client, query):
         tick = "✅" if c == act_src else "📂"
         col_btn.append(InlineKeyboardButton(f"{tick} {c.title()}", callback_data=f"coll_{req}_{key}_{c}"))
     btn.append(col_btn)
+    
     btn.append([InlineKeyboardButton("❌ Close", callback_data="close_data")])
 
     try:
@@ -287,7 +285,7 @@ async def nav_handler(client, query):
     await query.answer()
 
 # ─────────────────────────────────────────────
-# 🗂️ COLLECTION SWITCH HANDLER
+# 🗂️ COLLECTION SWITCH
 # ─────────────────────────────────────────────
 @Client.on_callback_query(filters.regex(r"^coll_"))
 async def coll_handler(client, query):
@@ -305,7 +303,6 @@ async def coll_handler(client, query):
     if not search:
         return await query.answer("❌ Search Expired!", show_alert=True)
 
-    # ⚡ DB Call
     files, next_off, total, act_src = await get_search_results(
         search, max_results=MAX_BTN, offset=0, collection_type=coll_type
     )
@@ -314,17 +311,14 @@ async def coll_handler(client, query):
 
     temp.FILES[key] = files
 
-    # Build Text
     list_items = []
     for file in files:
         f_link = f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file['_id']}"
         list_items.append(f"📁 <a href='{f_link}'>[{get_size(file['file_size'])}] {file['file_name']}</a>")
     
+    files_text = "\n\n".join(list_items)
     total_pages = math.ceil(total / MAX_BTN)
     
-    # 🔥 FIXED HERE: Using variable instead of joining inside f-string
-    files_text = "\n\n".join(list_items)
-
     cap = (
         f"<b>👑 Search: {search}\n"
         f"🎬 Total: {total}\n"
@@ -333,7 +327,6 @@ async def coll_handler(client, query):
         f"{files_text}"
     )
 
-    # Build Buttons
     btn = []
     nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
     if next_off:
@@ -355,9 +348,14 @@ async def coll_handler(client, query):
 
 @Client.on_callback_query(filters.regex("^close_data$"))
 async def close_cb(c, q):
-    await q.message.delete()
+    try:
+        # Cache clean up for this specific key to save RAM
+        # But we need key first, usually encoded in other buttons. 
+        # For simplicity, just delete.
+        await q.message.delete()
+    except:
+        pass
 
 @Client.on_callback_query(filters.regex("^pages$"))
 async def pages_cb(c, q):
     await q.answer()
-
