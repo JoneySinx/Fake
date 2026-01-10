@@ -83,7 +83,7 @@ async def db_count_documents():
         return {"primary": 0, "cloud": 0, "archive": 0, "total": 0}
 
 # ─────────────────────────────────────────
-# 💾 SAVE FILE (SAFE OLD LOGIC + ASYNC)
+# 💾 SAVE FILE (CORRECT STATS FIX)
 # ─────────────────────────────────────────
 async def save_file(media, collection_type="primary"):
     try:
@@ -103,11 +103,16 @@ async def save_file(media, collection_type="primary"):
 
         col = COLLECTIONS.get(collection_type, primary)
         
-        # ✅ UPDATE: insert_one की जगह replace_one यूज करें
-        # upsert=True का मतलब: अगर फाइल पहले से है तो अपडेट करे, नहीं तो नई बनाए।
-        # इससे "DuplicateKeyError" नहीं आएगा और इंडेक्सिंग नहीं रुकेगी।
-        await col.replace_one({"_id": file_id}, doc, upsert=True)
-        return "suc"
+        # ✅ FIX: Update or Insert logic with correct return status
+        result = await col.replace_one({"_id": file_id}, doc, upsert=True)
+
+        # अगर matched_count > 0 है, इसका मतलब फाइल पहले से थी (Update हुई)
+        if result.matched_count > 0:
+            return "dup"
+        # अगर नई फाइल बनी है (Insert हुई)
+        else:
+            return "suc"
+
     except Exception as e:
         logger.error(f"Error saving file: {e}")
         return "err"
@@ -136,7 +141,6 @@ async def _search(col, q, offset, limit):
         
         # ✅ CRITICAL FIX:
         # बोट प्लगइन को 'file_id' चाहिए होता है, लेकिन मोंगो '_id' देता है।
-        # हम यहाँ मैन्युअली '_id' को 'file_id' में कॉपी कर रहे हैं।
         for doc in docs:
             doc['file_id'] = doc['_id']
 
