@@ -1,104 +1,117 @@
+# plugins/draw.py
+
 import asyncio
 import aiohttp
 import io
-import random
 from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from info import HF_TOKEN
 
-# ==========================================
-# 🎨 ULTRA ADVANCED IMAGE GENERATION
-# Multi-Model Fallback System (Updated URL)
-# ==========================================
+# ===============================
+# 🎨 AI Image Generator Config
+# ===============================
 
-# List of Models (If one fails, bot tries the next one)
+HF_API_BASE = "https://router.huggingface.co/models"
+TIMEOUT = aiohttp.ClientTimeout(total=60)
+
 MODELS = [
-    "stabilityai/stable-diffusion-xl-base-1.0",    # Best Quality (SDXL)
-    "prompthero/openjourney",                      # Midjourney Style
-    "runwayml/stable-diffusion-v1-5",              # Fast & Reliable
-    "CompVis/stable-diffusion-v1-4"                # Old but Gold
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "prompthero/openjourney",
+    "runwayml/stable-diffusion-v1-5",
+    "CompVis/stable-diffusion-v1-4"
 ]
 
-headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+HEADERS = {
+    "Authorization": f"Bearer {HF_TOKEN}"
+}
 
-async def query_hg(prompt, model_index=0):
-    if model_index >= len(MODELS):
-        return None, "All models failed."
+# ===============================
+# 🔧 Helper Functions
+# ===============================
 
-    # 🔥 FIX: Changed URL from 'api-inference' to 'router'
-    model_url = f"https://router.huggingface.co/models/{MODELS[model_index]}"
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(model_url, headers=headers, json={"inputs": prompt}, timeout=60) as response:
-                if response.status == 200:
-                    return await response.read(), MODELS[model_index]
-                elif response.status == 503:
-                    # Model Loading/Busy -> Wait & Retry same model once, then switch
-                    await asyncio.sleep(3)
-                    return await query_hg(prompt, model_index + 1)
-                else:
-                    # Other error (like 404 or Moved Permanently) -> Try next model
-                    return await query_hg(prompt, model_index + 1)
-        except Exception as e:
-             print(f"Connection Error on {MODELS[model_index]}: {e}")
-             return await query_hg(prompt, model_index + 1)
+def extract_prompt(message):
+    if len(message.command) > 1:
+        return message.text.split(None, 1)[1]
+
+    if message.reply_to_message and message.reply_to_message.text:
+        return message.reply_to_message.text
+
+    return None
+
+
+def enhance_prompt(prompt: str) -> str:
+    if "quality" not in prompt.lower():
+        return f"{prompt}, cinematic lighting, 8k, ultra detailed, realistic, masterpiece"
+    return prompt
+
+
+async def generate_image(prompt: str):
+    async with aiohttp.ClientSession(headers=HEADERS, timeout=TIMEOUT) as session:
+        for model in MODELS:
+            url = f"{HF_API_BASE}/{model}"
+            try:
+                async with session.post(url, json={"inputs": prompt}) as resp:
+                    if resp.status == 200:
+                        return await resp.read(), model
+
+                    if resp.status == 503:
+                        await asyncio.sleep(3)
+
+            except Exception as e:
+                print(f"[HF ERROR] {model}: {e}")
+
+    return None, None
+
+
+# ===============================
+# 🎨 Command Handler
+# ===============================
 
 @Client.on_message(filters.command(["draw", "imagine", "img"]))
 async def draw_image(client, message):
-    # 1. Check Token
-    if not HF_TOKEN:
-        return await message.reply("❌ **Error:** Hugging Face Token (`HF_TOKEN`) is missing.")
 
-    # 2. Extract Prompt
-    prompt = ""
-    if len(message.command) > 1:
-        prompt = message.text.split(None, 1)[1]
-    elif message.reply_to_message and message.reply_to_message.text:
-        prompt = message.reply_to_message.text
-    else:
+    if not HF_TOKEN:
+        return await message.reply("❌ **HF_TOKEN missing**")
+
+    prompt = extract_prompt(message)
+    if not prompt:
         return await message.reply(
             "🎨 **AI Image Generator**\n\n"
-            "Usage: `/draw <prompt>`\n"
-            "Example: `/draw a cute cat in space, 4k`\n\n"
-            "⚠️ **Note:** I create NEW images from text. I cannot edit existing photos yet."
+            "`/draw <prompt>`\n"
+            "Example: `/draw a dragon flying over city, 4k`"
         )
 
-    # 3. Handle Photo Reply (Warn User)
     if message.reply_to_message and message.reply_to_message.photo:
         await message.reply(
-            "⚠️ **Image Editing Not Supported**\n"
-            "मैं पुरानी फोटो एडिट नहीं कर सकता। मैं आपके प्रॉम्प्ट से एक **नई फोटो** बना रहा हूँ।",
+            "⚠️ मैं पुरानी फोटो edit नहीं कर सकता,\n"
+            "आपके prompt से नई image बना रहा हूँ।",
             quote=True
         )
 
-    # 4. Enhance Prompt (Auto-Quality)
-    if "quality" not in prompt.lower():
-        prompt = f"{prompt}, cinematic lighting, 8k, highly detailed, realistic, masterpiece"
+    prompt = enhance_prompt(prompt)
 
-    status_msg = await message.reply(f"🎨 **Painting...**\n`{prompt}`\n\n_Trying multiple models..._")
+    status = await message.reply(f"🎨 **Generating...**\n`{prompt}`")
     await client.send_chat_action(message.chat.id, enums.ChatAction.UPLOAD_PHOTO)
 
-    try:
-        # 5. Call API (Recursive Model Switcher)
-        image_bytes, used_model = await query_hg(prompt)
+    image_bytes, model_used = await generate_image(prompt)
 
-        if not image_bytes:
-            return await status_msg.edit("❌ **Error:** Server is too busy or API URL changed. Check logs.")
+    if not image_bytes:
+        return await status.edit("❌ Server busy या models unavailable")
 
-        # 6. Convert bytes & Send
-        image_io = io.BytesIO(image_bytes)
-        image_io.name = "art.jpg"
+    image = io.BytesIO(image_bytes)
+    image.name = "ai_art.jpg"
 
-        await client.send_photo(
-            chat_id=message.chat.id,
-            photo=image_io,
-            caption=f"✨ **Prompt:** `{prompt}`\n🎨 **Model:** `{used_model}`\n🤖 **Gen by:** @{client.me.username}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑 Delete", callback_data="close_data")]
-            ])
+    await client.send_photo(
+        chat_id=message.chat.id,
+        photo=image,
+        caption=(
+            f"✨ **Prompt:** `{prompt}`\n"
+            f"🎨 **Model:** `{model_used}`\n"
+            f"🤖 @{client.me.username}"
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🗑 Delete", callback_data="close_data")]]
         )
-        await status_msg.delete()
+    )
 
-    except Exception as e:
-        await status_msg.edit(f"❌ **Error:** `{str(e)}`")
+    await status.delete()
